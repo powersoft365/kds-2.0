@@ -1,3 +1,4 @@
+// components/OrderCard.jsx
 "use client";
 import React from "react";
 import { Button } from "@/components/ui/button";
@@ -24,10 +25,10 @@ import {
   ChevronRight,
   PlusSquare,
   MinusCircle,
-  StickyNote,
   Loader2,
+  Info,
 } from "lucide-react";
-import { getItemNote } from "@/lib/api";
+import { getItemNote, getItemsNotesMap } from "@/lib/api";
 
 /**
  * OrderCard with full card drag functionality + per-item Notes modal
@@ -208,6 +209,44 @@ export function OrderCard({
   const [notesItemName, setNotesItemName] = React.useState("");
   const notesCacheRef = React.useRef(new Map()); // key: itemCode365 -> note string
 
+  // NEW: track which items have notes so we only show the icon for those
+  const [notesAvailable, setNotesAvailable] = React.useState(() => new Set());
+
+  // Preload notes availability whenever the order's items change
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const codes = (order.items || [])
+          .map((it) => it.itemCode365)
+          .filter(Boolean);
+        if (codes.length === 0) {
+          if (alive) setNotesAvailable(new Set());
+          return;
+        }
+        const map = await getItemsNotesMap(codes);
+        if (!alive) return;
+
+        const nextSet = new Set();
+        for (const [code, note] of map.entries()) {
+          const text = String(note || "").trim();
+          if (text.length > 0) {
+            nextSet.add(code);
+            // seed cache so opening is instant
+            notesCacheRef.current.set(code, text);
+          }
+        }
+        setNotesAvailable(nextSet);
+      } catch {
+        // fail-safe: hide icons if we can't determine notes
+        setNotesAvailable(new Set());
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [order.items]);
+
   const openNotesForItem = async (item) => {
     setNotesItemName(item.name || "");
     const code = item.itemCode365 || "";
@@ -219,6 +258,13 @@ export function OrderCard({
       setNotesError("No item code available for this line.");
       return;
     }
+
+    // If we already know this item doesn't have notes, show empty and bail
+    if (!notesAvailable.has(code)) {
+      setNotesText("");
+      return;
+    }
+
     const cached = notesCacheRef.current.get(code);
     if (typeof cached === "string") {
       setNotesText(cached);
@@ -286,6 +332,8 @@ export function OrderCard({
                       const isChecked = it.itemStatus === "checked";
                       const isCancelled = it.itemStatus === "cancelled";
                       const mods = Array.isArray(it.mods) ? it.mods : [];
+                      const hasNotes =
+                        !!it.itemCode365 && notesAvailable.has(it.itemCode365);
                       return (
                         <li
                           key={`${order.id}-${dept}-${it.id}`}
@@ -364,21 +412,23 @@ export function OrderCard({
                             </div>
                           </div>
 
-                          {/* Notes button (right side) */}
+                          {/* Notes button (right side) — SHOW ONLY IF ITEM HAS NOTES */}
                           <div className="flex items-center">
-                            <button
-                              type="button"
-                              title="View notes"
-                              aria-label="View notes"
-                              data-stop-item-click="true"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openNotesForItem(it);
-                              }}
-                              className="inline-flex items-center justify-center rounded-md border border-muted-foreground/30 hover:bg-white/5 h-8 w-8"
-                            >
-                              <StickyNote className="w-4 h-4" />
-                            </button>
+                            {hasNotes ? (
+                              <button
+                                type="button"
+                                title="View notes"
+                                aria-label="View notes"
+                                data-stop-item-click="true"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openNotesForItem(it);
+                                }}
+                                className="inline-flex items-center justify-center rounded-md border border-muted-foreground/30 hover:bg-white/5 h-8 w-8"
+                              >
+                                <Info className="w-4 h-4" />
+                              </button>
+                            ) : null}
                           </div>
                         </li>
                       );
@@ -518,7 +568,7 @@ export function OrderCard({
         <DialogContent className="p-0 overflow-hidden">
           <DialogHeader className="px-4 pt-4">
             <DialogTitle className="flex items-center gap-2">
-              <StickyNote className="w-5 h-5" />
+              <Info className="w-5 h-5" />
               Item Notes
             </DialogTitle>
             {notesItemName ? (
