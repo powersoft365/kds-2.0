@@ -1,3 +1,4 @@
+// components/OrderCard.jsx
 "use client";
 import React from "react";
 import { Button } from "@/components/ui/button";
@@ -24,10 +25,11 @@ import {
   ChevronRight,
   PlusSquare,
   MinusCircle,
-  StickyNote,
   Loader2,
+  Info,
 } from "lucide-react";
-import { getItemNote } from "@/lib/api";
+import { getItemNote, getItemsNotesMap } from "@/lib/api";
+import { showActionToast } from "@/components/Toast";
 
 /**
  * OrderCard with full card drag functionality + per-item Notes modal
@@ -89,6 +91,12 @@ export function OrderCard({
     const n = Array.isArray(v) ? v[0] : v;
     if (n >= 100) {
       onUndoAction && onUndoAction(order);
+      // action-specific color
+      showActionToast({
+        action: "order.undo",
+        message: `Order #${order.id} moved back to Active`,
+        major: true,
+      });
       setTimeout(() => closeUndo(), 150);
     }
   };
@@ -105,6 +113,11 @@ export function OrderCard({
     const n = Array.isArray(v) ? v[0] : v;
     if (n >= 100) {
       onRevertAction && onRevertAction(order);
+      showActionToast({
+        action: "order.revert",
+        message: `Order #${order.id} reverted to Not Started`,
+        major: true,
+      });
       setTimeout(() => closeRevert(), 150);
     }
   };
@@ -177,9 +190,24 @@ export function OrderCard({
     ) : null;
 
   const handlePrimaryClick = () => {
+    // We show an action-colored toast matching the intent
     if (isCooking && !readyToComplete) {
       openRevert();
       return;
+    }
+    // If all items checked -> completing
+    if (readyToComplete) {
+      showActionToast({
+        action: "order.complete",
+        message: `Order #${order.id} completed`,
+        major: true,
+      });
+    } else {
+      // Otherwise we're starting/marking the order as cooking
+      showActionToast({
+        action: "order.start",
+        message: `Order #${order.id} started cooking`,
+      });
     }
     onPrimaryAction && onPrimaryAction(order);
   };
@@ -197,7 +225,33 @@ export function OrderCard({
     if (isCompleted) return;
     const target = e.target;
     if (target?.closest?.('[data-stop-item-click="true"]')) return;
+
+    // Determine next item status to choose color before we send toggle
+    const orderObj = order || {};
+    const current = (orderObj.items || []).find((it) => it.id === itemId);
+    const currentState = current?.itemStatus || "none";
+    const states = ["none", "checked", "cancelled"];
+    const nextState =
+      states[(states.indexOf(currentState) + 1) % states.length];
+
     toggleItemState(orderId, itemId);
+
+    if (nextState === "checked") {
+      showActionToast({
+        action: "order.item.checked",
+        message: `Line marked done`,
+      });
+    } else if (nextState === "cancelled") {
+      showActionToast({
+        action: "order.item.cancelled",
+        message: `Line cancelled`,
+      });
+    } else {
+      showActionToast({
+        action: "order.item.toggle",
+        message: `Line toggled`,
+      });
+    }
   };
 
   /* ---------- Notes modal state + cache ---------- */
@@ -207,6 +261,44 @@ export function OrderCard({
   const [notesText, setNotesText] = React.useState("");
   const [notesItemName, setNotesItemName] = React.useState("");
   const notesCacheRef = React.useRef(new Map()); // key: itemCode365 -> note string
+
+  // Show icon only for items that actually have notes
+  const [notesAvailable, setNotesAvailable] = React.useState(() => new Set());
+
+  // Preload notes availability whenever the order's items change
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const codes = (order.items || [])
+          .map((it) => it.itemCode365)
+          .filter(Boolean);
+        if (codes.length === 0) {
+          if (alive) setNotesAvailable(new Set());
+          return;
+        }
+        const map = await getItemsNotesMap(codes);
+        if (!alive) return;
+
+        const nextSet = new Set();
+        for (const [code, note] of map.entries()) {
+          const text = String(note || "").trim();
+          if (text.length > 0) {
+            nextSet.add(code);
+            // seed cache so opening is instant
+            notesCacheRef.current.set(code, text);
+          }
+        }
+        setNotesAvailable(nextSet);
+      } catch {
+        // fail-safe: hide icons if we can't determine notes
+        setNotesAvailable(new Set());
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [order.items]);
 
   const openNotesForItem = async (item) => {
     setNotesItemName(item.name || "");
@@ -219,6 +311,12 @@ export function OrderCard({
       setNotesError("No item code available for this line.");
       return;
     }
+
+    if (!notesAvailable.has(code)) {
+      setNotesText("");
+      return;
+    }
+
     const cached = notesCacheRef.current.get(code);
     if (typeof cached === "string") {
       setNotesText(cached);
@@ -286,6 +384,8 @@ export function OrderCard({
                       const isChecked = it.itemStatus === "checked";
                       const isCancelled = it.itemStatus === "cancelled";
                       const mods = Array.isArray(it.mods) ? it.mods : [];
+                      const hasNotes =
+                        !!it.itemCode365 && notesAvailable.has(it.itemCode365);
                       return (
                         <li
                           key={`${order.id}-${dept}-${it.id}`}
@@ -364,21 +464,23 @@ export function OrderCard({
                             </div>
                           </div>
 
-                          {/* Notes button (right side) */}
+                          {/* Notes button (right side) — SHOW ONLY IF ITEM HAS NOTES */}
                           <div className="flex items-center">
-                            <button
-                              type="button"
-                              title="View notes"
-                              aria-label="View notes"
-                              data-stop-item-click="true"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openNotesForItem(it);
-                              }}
-                              className="inline-flex items-center justify-center rounded-md border border-muted-foreground/30 hover:bg-white/5 h-8 w-8"
-                            >
-                              <StickyNote className="w-4 h-4" />
-                            </button>
+                            {hasNotes ? (
+                              <button
+                                type="button"
+                                title="View notes"
+                                aria-label="View notes"
+                                data-stop-item-click="true"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openNotesForItem(it);
+                                }}
+                                className="inline-flex items-center justify-center rounded-md border border-muted-foreground/30 hover:bg-white/5 h-8 w-8"
+                              >
+                                <Info className="w-4 h-4" />
+                              </button>
+                            ) : null}
                           </div>
                         </li>
                       );
@@ -398,6 +500,12 @@ export function OrderCard({
                     e.stopPropagation();
                     setEtaDialog &&
                       setEtaDialog({ open: true, orderId: order.id });
+                    // Color for time/ETA changes is amber (Color 3)
+                    showActionToast({
+                      action: "order.time.changed",
+                      message: `Adjust ETA for #${order.id}`,
+                      variant: "info",
+                    });
                   }}
                   className="inline-flex items-center justify-center md:justify-start gap-2 font-extrabold text-base rounded-md px-2 py-1 hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-blue-500"
                   aria-label="Adjust ETA"
@@ -453,6 +561,10 @@ export function OrderCard({
                       onClick={(e) => {
                         e.stopPropagation();
                         setOrderDialog({ open: true, orderId: order.id });
+                        showActionToast({
+                          action: "order.update",
+                          message: `Viewing details for #${order.id}`,
+                        });
                       }}
                       aria-label={t("View details")}
                       title={t("View details")}
@@ -518,7 +630,7 @@ export function OrderCard({
         <DialogContent className="p-0 overflow-hidden">
           <DialogHeader className="px-4 pt-4">
             <DialogTitle className="flex items-center gap-2">
-              <StickyNote className="w-5 h-5" />
+              <Info className="w-5 h-5" />
               Item Notes
             </DialogTitle>
             {notesItemName ? (

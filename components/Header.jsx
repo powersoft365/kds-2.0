@@ -24,6 +24,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuCheckboxItem,
 } from "@/components/ui/dropdown-menu";
+import Link from "next/link";
 
 /**
  * Header with Department filter "lock" behavior:
@@ -282,9 +283,11 @@ export function Header({
           </Button>
 
           {/* Power / Logout */}
-          <Button variant="ghost" size="icon" aria-label="Power">
-            <Power className="w-5 h-5" />
-          </Button>
+          <Link href="/login">
+            <Button variant="ghost" size="icon" aria-label="Power">
+              <Power className="w-5 h-5" />
+            </Button>
+          </Link>
 
           {/* Mobile Tray Toggle */}
           <Button
