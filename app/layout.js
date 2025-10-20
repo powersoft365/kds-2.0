@@ -11,6 +11,7 @@ export default function RootLayout({ children }) {
         {/* ThemeProvider uses class switching so Tailwind `dark:` works */}
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           {children}
+
           {/* Global Sonner Toaster with safe defaults */}
           <Toaster
             richColors

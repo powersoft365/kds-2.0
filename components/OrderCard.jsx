@@ -29,6 +29,7 @@ import {
   Info,
 } from "lucide-react";
 import { getItemNote, getItemsNotesMap } from "@/lib/api";
+import { showActionToast } from "@/components/Toast";
 
 /**
  * OrderCard with full card drag functionality + per-item Notes modal
@@ -90,6 +91,12 @@ export function OrderCard({
     const n = Array.isArray(v) ? v[0] : v;
     if (n >= 100) {
       onUndoAction && onUndoAction(order);
+      // action-specific color
+      showActionToast({
+        action: "order.undo",
+        message: `Order #${order.id} moved back to Active`,
+        major: true,
+      });
       setTimeout(() => closeUndo(), 150);
     }
   };
@@ -106,6 +113,11 @@ export function OrderCard({
     const n = Array.isArray(v) ? v[0] : v;
     if (n >= 100) {
       onRevertAction && onRevertAction(order);
+      showActionToast({
+        action: "order.revert",
+        message: `Order #${order.id} reverted to Not Started`,
+        major: true,
+      });
       setTimeout(() => closeRevert(), 150);
     }
   };
@@ -178,9 +190,24 @@ export function OrderCard({
     ) : null;
 
   const handlePrimaryClick = () => {
+    // We show an action-colored toast matching the intent
     if (isCooking && !readyToComplete) {
       openRevert();
       return;
+    }
+    // If all items checked -> completing
+    if (readyToComplete) {
+      showActionToast({
+        action: "order.complete",
+        message: `Order #${order.id} completed`,
+        major: true,
+      });
+    } else {
+      // Otherwise we're starting/marking the order as cooking
+      showActionToast({
+        action: "order.start",
+        message: `Order #${order.id} started cooking`,
+      });
     }
     onPrimaryAction && onPrimaryAction(order);
   };
@@ -198,7 +225,33 @@ export function OrderCard({
     if (isCompleted) return;
     const target = e.target;
     if (target?.closest?.('[data-stop-item-click="true"]')) return;
+
+    // Determine next item status to choose color before we send toggle
+    const orderObj = order || {};
+    const current = (orderObj.items || []).find((it) => it.id === itemId);
+    const currentState = current?.itemStatus || "none";
+    const states = ["none", "checked", "cancelled"];
+    const nextState =
+      states[(states.indexOf(currentState) + 1) % states.length];
+
     toggleItemState(orderId, itemId);
+
+    if (nextState === "checked") {
+      showActionToast({
+        action: "order.item.checked",
+        message: `Line marked done`,
+      });
+    } else if (nextState === "cancelled") {
+      showActionToast({
+        action: "order.item.cancelled",
+        message: `Line cancelled`,
+      });
+    } else {
+      showActionToast({
+        action: "order.item.toggle",
+        message: `Line toggled`,
+      });
+    }
   };
 
   /* ---------- Notes modal state + cache ---------- */
@@ -209,7 +262,7 @@ export function OrderCard({
   const [notesItemName, setNotesItemName] = React.useState("");
   const notesCacheRef = React.useRef(new Map()); // key: itemCode365 -> note string
 
-  // NEW: track which items have notes so we only show the icon for those
+  // Show icon only for items that actually have notes
   const [notesAvailable, setNotesAvailable] = React.useState(() => new Set());
 
   // Preload notes availability whenever the order's items change
@@ -259,7 +312,6 @@ export function OrderCard({
       return;
     }
 
-    // If we already know this item doesn't have notes, show empty and bail
     if (!notesAvailable.has(code)) {
       setNotesText("");
       return;
@@ -448,6 +500,12 @@ export function OrderCard({
                     e.stopPropagation();
                     setEtaDialog &&
                       setEtaDialog({ open: true, orderId: order.id });
+                    // Color for time/ETA changes is amber (Color 3)
+                    showActionToast({
+                      action: "order.time.changed",
+                      message: `Adjust ETA for #${order.id}`,
+                      variant: "info",
+                    });
                   }}
                   className="inline-flex items-center justify-center md:justify-start gap-2 font-extrabold text-base rounded-md px-2 py-1 hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-blue-500"
                   aria-label="Adjust ETA"
@@ -503,6 +561,10 @@ export function OrderCard({
                       onClick={(e) => {
                         e.stopPropagation();
                         setOrderDialog({ open: true, orderId: order.id });
+                        showActionToast({
+                          action: "order.update",
+                          message: `Viewing details for #${order.id}`,
+                        });
                       }}
                       aria-label={t("View details")}
                       title={t("View details")}
