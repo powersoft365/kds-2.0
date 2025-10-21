@@ -4,9 +4,8 @@ export const dynamic = "force-dynamic";
 import { Agent } from "undici";
 
 const BASE = (process.env.PS365_API_BASE || "").replace(/\/$/, "");
-const TOKEN = process.env.PS365_TOKEN || "";
 
-// dev-only: allow broken TLS from the test host
+// dev-only: allow broken TLS
 const dispatcher =
   process.env.PS365_ALLOW_INSECURE === "true"
     ? new Agent({ connect: { rejectUnauthorized: false } })
@@ -17,29 +16,44 @@ function joinPath(seg) {
   return Array.isArray(seg) ? seg.join("/") : String(seg);
 }
 
-// 🔹 MUST await params (Next.js rule)
+// ---------- helpers ----------
 async function upstreamURL(req, paramsPromise) {
   const params = await paramsPromise;
   const path = joinPath(params?.path);
   const u = new URL(req.url);
-
-  // We’ll build the upstream URL first…
   const upstream = new URL(`${BASE}/${path}`);
-  // copy original query params
   for (const [k, v] of u.searchParams.entries())
     upstream.searchParams.append(k, v);
-
   return upstream;
 }
 
+// ---------- POST ----------
 async function proxyPOST(req, ctx) {
   let bodyObj = {};
   try {
     bodyObj = await req.json();
   } catch {}
 
-  // Ensure token is in the body per PS365 convention
-  if (!bodyObj.api_credentials) bodyObj.api_credentials = { token: TOKEN };
+  // 🔹 Extract token from request header or body
+  const tokenHeader = req.headers.get("x-ps365-token");
+  const tokenBody = bodyObj?.api_credentials?.token;
+  const token = tokenHeader || tokenBody || "";
+
+  // 🔹 Ensure PS365-style api_credentials
+  if (!bodyObj.api_credentials) bodyObj.api_credentials = { token };
+  else if (!bodyObj.api_credentials.token)
+    bodyObj.api_credentials.token = token;
+
+  // 🔹 Reject if token still missing
+  if (!bodyObj.api_credentials.token) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        message: "Missing PowerSoft365 token. Please log in again.",
+      }),
+      { status: 401, headers: { "content-type": "application/json" } }
+    );
+  }
 
   const urlObj = await upstreamURL(req, ctx.params);
   const res = await fetch(urlObj.toString(), {
@@ -58,11 +72,12 @@ async function proxyPOST(req, ctx) {
   });
 }
 
+// ---------- GET ----------
 async function proxyGET(req, ctx) {
-  // Build upstream URL and inject token as QUERY (per Postman)
   const urlObj = await upstreamURL(req, ctx.params);
-  if (TOKEN && !urlObj.searchParams.has("token")) {
-    urlObj.searchParams.set("token", TOKEN);
+  const token = req.headers.get("x-ps365-token");
+  if (token && !urlObj.searchParams.has("token")) {
+    urlObj.searchParams.set("token", token);
   }
 
   const res = await fetch(urlObj.toString(), {
@@ -80,6 +95,7 @@ async function proxyGET(req, ctx) {
   });
 }
 
+// ---------- exports ----------
 export async function GET(req, ctx) {
   return proxyGET(req, ctx);
 }

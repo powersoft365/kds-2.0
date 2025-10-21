@@ -1,4 +1,3 @@
-// app/kds-pro/components/SignalRBridge.jsx
 "use client";
 
 import React from "react";
@@ -7,7 +6,6 @@ import { toast } from "sonner";
 
 /** Lightweight log bus stored on window so other components can subscribe */
 function useLogBus(namespace = "SignalR") {
-  // window.__srlog = [{ ts, level, ns, msg, data }]
   const push = (level, msg, data) => {
     try {
       const entry = {
@@ -17,39 +15,29 @@ function useLogBus(namespace = "SignalR") {
         msg,
         data,
       };
-      const w = typeof window !== "undefined" ? window : undefined;
-      if (!w) return;
-      w.__srlog = Array.isArray(w.__srlog) ? w.__srlog : [];
-      w.__srlog.push(entry);
-      w.dispatchEvent?.(new CustomEvent("srlog", { detail: entry }));
+      if (typeof window === "undefined") return;
+      window.__srlog = Array.isArray(window.__srlog) ? window.__srlog : [];
+      window.__srlog.push(entry);
+      window.dispatchEvent?.(new CustomEvent("srlog", { detail: entry }));
     } catch {}
   };
 
-  const api = {
-    info: (m, d) => {
-      // console.info(`[${namespace}]`, m, d ?? "");
-      push("info", m, d);
-    },
+  return {
+    info: (m, d) => push("info", m, d),
     warn: (m, d) => {
       console.warn(`[${namespace}]`, m, d ?? "");
       push("warn", m, d);
     },
-    error: (m, d) => {
-      // console.error(`[${namespace}]`, m, d ?? "");
-      push("error", m, d);
-    },
+    error: (m, d) => push("error", m, d),
     group: (title) => console.group?.(`[${namespace}] ${title}`),
     groupEnd: () => console.groupEnd?.(),
-    table: (
-      rows //console.table?.(rows),
-    ) => push,
+    table: (rows) => push("table", rows),
   };
-  return api;
 }
 
 /**
  * Classic ASP.NET SignalR (2.x, jQuery-based) bridge for Next.js.
- * Adds a robust logger that writes to DevTools AND a global in-app log bus.
+ * Adds robust logging and automatic reconnect.
  */
 export default function SignalRBridge({
   onOrderUpdate,
@@ -60,20 +48,31 @@ export default function SignalRBridge({
 }) {
   const log = useLogBus("SignalR");
 
-  const SIGNALR_BASE = process.env.NEXT_PUBLIC_SIGNALR_BASE;
-  const SIGNALR_HUBS = process.env.NEXT_PUBLIC_SIGNALR_HUBS;
+  const SIGNALR_BASE = process.env.NEXT_PUBLIC_SIGNALR_BASE || "";
+  const SIGNALR_HUBS = process.env.NEXT_PUBLIC_SIGNALR_HUBS || "";
 
-  // browser-facing creds (same model as your msgs.html sample)
+  // ✅ Safe browser-only localStorage access
+  const [token, setToken] = React.useState("");
+  React.useEffect(() => {
+    try {
+      const t = localStorage.getItem("ps365_token") || "";
+      setToken(t);
+    } catch {
+      setToken("");
+    }
+  }, []);
+
+  // ✅ Build credentials dynamically after token loaded
   const CRED = React.useMemo(
     () => ({
-      token: process.env.NEXT_PUBLIC_PS365_TOKEN || "",
+      token,
       device_id: process.env.NEXT_PUBLIC_PS365_DEVICE_ID || "KDS_WEB",
       application_code_365:
         process.env.NEXT_PUBLIC_PS365_APPLICATION_CODE_365 || "KITCHENDISPLAY",
       fallback_dept:
         process.env.NEXT_PUBLIC_PS365_ITEM_DEPARTMENT_CODE_365 || "",
     }),
-    []
+    [token]
   );
 
   const [jqReady, setJqReady] = React.useState(false);
@@ -97,7 +96,7 @@ export default function SignalRBridge({
         "setEta",
       ]);
       log.table([
-        { key: "token", value: CRED.token ? "…present…" : "(missing!)" },
+        { key: "token", value: token ? "…present…" : "(missing!)" },
         { key: "device_id", value: CRED.device_id },
         { key: "application_code_365", value: CRED.application_code_365 },
         { key: "fallback_dept", value: CRED.fallback_dept || "(none)" },
@@ -105,13 +104,13 @@ export default function SignalRBridge({
         { key: "SIGNALR_HUBS", value: SIGNALR_HUBS || "(missing)" },
       ]);
       log.groupEnd();
-      if (!CRED.token) {
+      if (!token) {
         toast("PS365 token missing", {
-          description: "Set NEXT_PUBLIC_PS365_TOKEN in .env",
+          description: "Please login or set ps365_token in localStorage",
         });
       }
     }
-  }, [debug, CRED, SIGNALR_BASE, SIGNALR_HUBS]); // eslint-disable-line
+  }, [debug, token, SIGNALR_BASE, SIGNALR_HUBS, CRED]);
 
   const scheduleReconnect = React.useCallback(() => {
     if (stopRequested.current) return;
@@ -149,7 +148,7 @@ export default function SignalRBridge({
       }
       hubRef.current = hub;
 
-      // add as querystring too (some servers read from there)
+      // ✅ Add query credentials
       $.connection.hub.qs = {
         token: CRED.token,
         device_id: CRED.device_id,
@@ -223,7 +222,7 @@ export default function SignalRBridge({
         scheduleReconnect();
       });
 
-      // ===== OUTBOUND helpers (public API) =====
+      // ===== OUTBOUND =====
       const clone = (v) => {
         try {
           return typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v;
@@ -248,13 +247,13 @@ export default function SignalRBridge({
         try {
           if (h.server[methodName]) {
             const res = await h.server[methodName](body);
-            log.info("Result (typed)", res);
+            log.info("Result", res);
             toast.success(`Sent: ${methodName}`);
             return res;
           }
           if (h.server.helloRestaurant) {
             const res = await h.server.helloRestaurant(JSON.stringify(body));
-            log.info("Result (helloRestaurant)", res);
+            log.info("Result (fallback)", res);
             toast.success(`Sent: ${methodName} (fallback)`);
             return res;
           }
@@ -279,34 +278,13 @@ export default function SignalRBridge({
           return call(type, { type, ...clone(payload) }, dept);
         },
         async startCooking(order, dept = CRED.fallback_dept) {
-          return call(
-            "startCooking",
-            {
-              kind: "startCooking",
-              orderId: order?.id,
-              eta: order?.eta ?? null,
-              dest: order?.dest ?? null,
-            },
-            dept
-          );
+          return call("startCooking", order, dept);
         },
         async completeOrder(order, dept = CRED.fallback_dept) {
-          return call(
-            "completeOrder",
-            {
-              kind: "completeOrder",
-              orderId: order?.id,
-              dest: order?.dest ?? null,
-            },
-            dept
-          );
+          return call("completeOrder", order, dept);
         },
         async revertOrder(order, dept = CRED.fallback_dept) {
-          return call(
-            "revertOrder",
-            { kind: "revertOrder", orderId: order?.id },
-            dept
-          );
+          return call("revertOrder", order, dept);
         },
         async toggleItem(
           orderId,
@@ -314,21 +292,15 @@ export default function SignalRBridge({
           itemStatus,
           dept = CRED.fallback_dept
         ) {
-          return call(
-            "toggleItem",
-            { kind: "toggleItem", orderId, itemId, itemStatus },
-            dept
-          );
+          return call("toggleItem", { orderId, itemId, itemStatus }, dept);
         },
         async setEta(orderId, etaMinutes, dept = CRED.fallback_dept) {
-          return call("setEta", { kind: "setEta", orderId, etaMinutes }, dept);
+          return call("setEta", { orderId, etaMinutes }, dept);
         },
       };
 
-      if (typeof window !== "undefined") {
-        window.SignalR = api;
-        log.info("window.SignalR ready", Object.keys(api));
-      }
+      window.SignalR = api;
+      log.info("window.SignalR ready", Object.keys(api));
     } catch (e) {
       log.error("Init error", e);
       toast.error("SignalR init error", { description: String(e) });
@@ -346,9 +318,10 @@ export default function SignalRBridge({
     scheduleReconnect,
     withCredentials,
     CRED,
-  ]); // eslint-disable-line
+  ]);
 
   React.useEffect(() => {
+    if (!token) return; // wait until token ready
     startConnection();
     return () => {
       stopRequested.current = true;
@@ -357,9 +330,9 @@ export default function SignalRBridge({
         if ($?.connection?.hub?.stop) $.connection.hub.stop();
       } catch {}
       startedRef.current = false;
-      if (typeof window !== "undefined") delete window.SignalR;
+      delete window.SignalR;
     };
-  }, [startConnection]);
+  }, [startConnection, token]);
 
   return (
     <>
@@ -378,9 +351,7 @@ export default function SignalRBridge({
           src={SIGNALR_HUBS}
           strategy="afterInteractive"
           onLoad={() => setHubsReady(true)}
-          onError={() => {
-            toast.error("Failed to load /signalr/hubs");
-          }}
+          onError={() => toast.error("Failed to load /signalr/hubs")}
         />
       ) : null}
     </>
