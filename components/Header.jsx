@@ -13,6 +13,7 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  Type,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -38,10 +39,7 @@ import {
 } from "@/components/ui/dialog";
 
 /**
- * Header with Department filter + dynamic Login/Logout behavior.
- * - Shows "Login" if no ps365_token
- * - Shows "Logout" with confirmation modal if token exists
- * - Modal stays open until user confirms/cancels manually
+ * Header with Department filter + dynamic Login/Logout behavior + Font Size dropdown (with extra small)
  */
 export function Header({
   currentTime,
@@ -62,11 +60,30 @@ export function Header({
   const [activeLoadingDept, setActiveLoadingDept] = React.useState(null);
   const [hasToken, setHasToken] = React.useState(false);
   const [isLogoutOpen, setIsLogoutOpen] = React.useState(false);
+  const [fontSize, setFontSize] = React.useState("medium");
 
   React.useEffect(() => {
     const token = localStorage.getItem("ps365_token");
     setHasToken(!!token);
+
+    const savedFontSize = localStorage.getItem("fontSizePref") || "medium";
+    setFontSize(savedFontSize);
+    applyFontSize(savedFontSize);
   }, []);
+
+  const applyFontSize = (size) => {
+    const html = document.documentElement;
+    if (size === "xsmall") html.style.fontSize = "12px";
+    else if (size === "small") html.style.fontSize = "14px";
+    else if (size === "large") html.style.fontSize = "18px";
+    else html.style.fontSize = "16px";
+  };
+
+  const handleFontChange = (size) => {
+    setFontSize(size);
+    localStorage.setItem("fontSizePref", size);
+    applyFontSize(size);
+  };
 
   const isLocked = activeLoadingDept !== null;
 
@@ -176,6 +193,33 @@ export function Header({
             </DropdownMenuCheckboxItem>
           );
         })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  /* ---------- Font Size Dropdown ---------- */
+  const FontSizeDropdown = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" aria-label="Font size settings">
+          <Type className="w-5 h-5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" side="bottom" className="w-40">
+        <DropdownMenuLabel>Text Size</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {["xsmall", "small", "medium", "large"].map((size) => (
+          <DropdownMenuCheckboxItem
+            key={size}
+            checked={fontSize === size}
+            onSelect={(e) => e.preventDefault()}
+            onCheckedChange={() => handleFontChange(size)}
+          >
+            {size === "xsmall"
+              ? "Extra Small"
+              : size.charAt(0).toUpperCase() + size.slice(1)}
+          </DropdownMenuCheckboxItem>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -295,6 +339,9 @@ export function Header({
           <div className="hidden lg:block">
             {sortedDepartments.length <= 5 ? DeptPills : DeptDropdown}
           </div>
+
+          {/* Font Size Dropdown */}
+          {FontSizeDropdown}
 
           {/* Settings */}
           <Button
