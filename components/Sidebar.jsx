@@ -1,15 +1,9 @@
 "use client";
-
 import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-  ChevronDown,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
-/* Media query helper (no TS) */
+/* Media query helper */
 function useMediaQuery(query) {
   const [matches, setMatches] = useState(false);
   useEffect(() => {
@@ -27,9 +21,18 @@ function useMediaQuery(query) {
   return matches;
 }
 
-export function Sidebar({ sidebarOpen, setSidebarOpen, totalsByDept, t }) {
+/**
+ * Sidebar with expandable department sections.
+ * Each item name can be clicked to filter orders by that item.
+ */
+export function Sidebar({
+  sidebarOpen,
+  setSidebarOpen,
+  totalsByDept,
+  t,
+  onItemClick, // new callback passed from parent (KdsPro)
+}) {
   const isDesktop = useMediaQuery("(min-width: 1024px)"); // lg
-
   const [expandedDepts, setExpandedDepts] = useState({});
   const deptEntries = useMemo(
     () => Object.entries(totalsByDept || {}),
@@ -39,7 +42,7 @@ export function Sidebar({ sidebarOpen, setSidebarOpen, totalsByDept, t }) {
   useEffect(() => {
     const init = {};
     deptEntries.forEach(([dept]) => {
-      init[dept] = isDesktop; // expanded by default on desktop, collapsed on mobile
+      init[dept] = isDesktop;
     });
     setExpandedDepts(init);
   }, [deptEntries, isDesktop]);
@@ -114,8 +117,7 @@ export function Sidebar({ sidebarOpen, setSidebarOpen, totalsByDept, t }) {
           </Button>
         </div>
 
-        {/* Scrollable content
-            KEY: wrap in flex-1 + min-h-0 and use native overflow-y-auto */}
+        {/* Scrollable content */}
         <div className="flex-1 min-h-0 overflow-y-auto p-3 lg:p-4">
           {deptEntries.length === 0 ? (
             <div className="text-center text-sm text-muted-foreground py-6">
@@ -162,7 +164,7 @@ export function Sidebar({ sidebarOpen, setSidebarOpen, totalsByDept, t }) {
                       </span>
                     </button>
 
-                    {/* Items (hidden in collapsed desktop rail) */}
+                    {/* Items list */}
                     {isDesktop && !sidebarOpen ? null : (
                       <div
                         className={`overflow-hidden transition-[max-height,opacity] duration-300 ${
@@ -175,8 +177,13 @@ export function Sidebar({ sidebarOpen, setSidebarOpen, totalsByDept, t }) {
                           {Object.entries(items).map(([name, qty]) => (
                             <li
                               key={`${dept}-${name}`}
-                              className="grid grid-cols-[1fr_auto] items-center gap-3 text-sm px-3 py-2 rounded-lg hover:bg-muted/50 transition-colors"
+                              className="grid grid-cols-[1fr_auto] items-center gap-3 text-sm px-3 py-2 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer"
                               title={name}
+                              onClick={() => {
+                                if (typeof onItemClick === "function") {
+                                  onItemClick(name);
+                                }
+                              }}
                             >
                               <span className="truncate font-medium">
                                 {name}

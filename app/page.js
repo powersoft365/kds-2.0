@@ -610,8 +610,10 @@ function KdsPro() {
     },
     [activeTab]
   );
-
   const toggleDept = (dept) => {
+    // ✅ Clear the search box whenever department is changed
+    setSearchTerm("");
+
     if (dept === "All") return setSelectedDepts(["All"]);
     let next = selectedDepts.filter((d) => d !== "All");
     if (next.includes(dept)) next = next.filter((d) => d !== dept);
@@ -733,6 +735,7 @@ function KdsPro() {
             setSidebarOpen={setSidebarOpen}
             totalsByDept={totalsByDept}
             t={t}
+            onItemClick={(itemName) => setSearchTerm(itemName)} // ✅ filter orders by item name
           />
         )}
         <section className="flex-1 min-h-0 p-4 overflow-y-auto">

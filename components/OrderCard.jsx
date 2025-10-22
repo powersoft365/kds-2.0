@@ -1,4 +1,3 @@
-// components/OrderCard.jsx
 "use client";
 import React from "react";
 import { Button } from "@/components/ui/button";
@@ -32,8 +31,7 @@ import { getItemNote, getItemsNotesMap } from "@/lib/api";
 import { showActionToast } from "@/components/Toast";
 
 /**
- * OrderCard with full card drag functionality + per-item Notes modal
- * and read-only per-item Modifiers display.
+ * OrderCard component with department-aware item filtering and item Notes modal.
  */
 export function OrderCard({
   order,
@@ -43,7 +41,6 @@ export function OrderCard({
   onRevertAction,
   setEtaDialog,
   setOrderDialog,
-  // internal helpers
   t = (s) => s,
   timeElapsedMin,
   calcSubStatus,
@@ -79,7 +76,7 @@ export function OrderCard({
     }
   }, []);
 
-  /* ---------- slide-to-undo ---------- */
+  /* ---------- Slide-to-Undo ---------- */
   const [undoOpen, setUndoOpen] = React.useState(false);
   const [undoVal, setUndoVal] = React.useState([0]);
   const openUndo = () => {
@@ -91,7 +88,6 @@ export function OrderCard({
     const n = Array.isArray(v) ? v[0] : v;
     if (n >= 100) {
       onUndoAction && onUndoAction(order);
-      // action-specific color
       showActionToast({
         action: "order.undo",
         message: `Order #${order.id} moved back to Active`,
@@ -101,7 +97,7 @@ export function OrderCard({
     }
   };
 
-  /* ---------- slide-to-revert ---------- */
+  /* ---------- Slide-to-Revert ---------- */
   const [revertOpen, setRevertOpen] = React.useState(false);
   const [revertVal, setRevertVal] = React.useState([0]);
   const openRevert = () => {
@@ -122,12 +118,30 @@ export function OrderCard({
     }
   };
 
-  /* ---------- items by department ---------- */
+  /* ---------- Items grouped by department ---------- */
   const itemsByDept = (order.items || []).reduce((acc, it) => {
     const d = it.dept || "General";
     (acc[d] ||= []).push(it);
     return acc;
   }, {});
+
+  // 🔹 Filter items by selected departments but keep department headers
+  const filteredItemsByDept = React.useMemo(() => {
+    if (!Array.isArray(selectedDepts) || selectedDepts.includes("All"))
+      return itemsByDept;
+    const filtered = {};
+    for (const [dept, items] of Object.entries(itemsByDept)) {
+      if (selectedDepts.includes(dept)) {
+        filtered[dept] = items;
+      }
+    }
+    if (Object.keys(filtered).length === 0 && Object.keys(itemsByDept).length) {
+      const firstDept = Object.keys(itemsByDept)[0];
+      filtered[firstDept] = [];
+    }
+    return filtered;
+  }, [itemsByDept, selectedDepts]);
+
   const showDeptHeaders =
     Array.isArray(selectedDepts) &&
     selectedDepts.includes("All") &&
@@ -143,7 +157,7 @@ export function OrderCard({
     return `${base} bg-slate-600 text-white`;
   };
 
-  /* ---------- countdown ---------- */
+  /* ---------- Countdown ---------- */
   const startedAtMs = order.cookingStartedAt
     ? typeof order.cookingStartedAt === "number"
       ? order.cookingStartedAt
@@ -190,12 +204,10 @@ export function OrderCard({
     ) : null;
 
   const handlePrimaryClick = () => {
-    // We show an action-colored toast matching the intent
     if (isCooking && !readyToComplete) {
       openRevert();
       return;
     }
-    // If all items checked -> completing
     if (readyToComplete) {
       showActionToast({
         action: "order.complete",
@@ -203,7 +215,6 @@ export function OrderCard({
         major: true,
       });
     } else {
-      // Otherwise we're starting/marking the order as cooking
       showActionToast({
         action: "order.start",
         message: `Order #${order.id} started cooking`,
@@ -217,16 +228,13 @@ export function OrderCard({
       ? "border-red-600"
       : statusBorder(order);
 
-  /**
-   * Row click (checkbox toggle).
-   */
+  /* ---------- Item click ---------- */
   const handleItemClick = (e, orderId, itemId) => {
     if (e.defaultPrevented || e.button !== 0) return;
     if (isCompleted) return;
     const target = e.target;
     if (target?.closest?.('[data-stop-item-click="true"]')) return;
 
-    // Determine next item status to choose color before we send toggle
     const orderObj = order || {};
     const current = (orderObj.items || []).find((it) => it.id === itemId);
     const currentState = current?.itemStatus || "none";
@@ -247,25 +255,19 @@ export function OrderCard({
         message: `Line cancelled`,
       });
     } else {
-      showActionToast({
-        action: "order.item.toggle",
-        message: `Line toggled`,
-      });
+      showActionToast({ action: "order.item.toggle", message: `Line toggled` });
     }
   };
 
-  /* ---------- Notes modal state + cache ---------- */
+  /* ---------- Notes modal state ---------- */
   const [notesOpen, setNotesOpen] = React.useState(false);
   const [notesLoading, setNotesLoading] = React.useState(false);
   const [notesError, setNotesError] = React.useState("");
   const [notesText, setNotesText] = React.useState("");
   const [notesItemName, setNotesItemName] = React.useState("");
-  const notesCacheRef = React.useRef(new Map()); // key: itemCode365 -> note string
-
-  // Show icon only for items that actually have notes
+  const notesCacheRef = React.useRef(new Map());
   const [notesAvailable, setNotesAvailable] = React.useState(() => new Set());
 
-  // Preload notes availability whenever the order's items change
   React.useEffect(() => {
     let alive = true;
     (async () => {
@@ -279,19 +281,16 @@ export function OrderCard({
         }
         const map = await getItemsNotesMap(codes);
         if (!alive) return;
-
         const nextSet = new Set();
         for (const [code, note] of map.entries()) {
           const text = String(note || "").trim();
           if (text.length > 0) {
             nextSet.add(code);
-            // seed cache so opening is instant
             notesCacheRef.current.set(code, text);
           }
         }
         setNotesAvailable(nextSet);
       } catch {
-        // fail-safe: hide icons if we can't determine notes
         setNotesAvailable(new Set());
       }
     })();
@@ -311,18 +310,15 @@ export function OrderCard({
       setNotesError("No item code available for this line.");
       return;
     }
-
     if (!notesAvailable.has(code)) {
       setNotesText("");
       return;
     }
-
     const cached = notesCacheRef.current.get(code);
     if (typeof cached === "string") {
       setNotesText(cached);
       return;
     }
-
     try {
       setNotesLoading(true);
       const note = await getItemNote(code);
@@ -336,6 +332,7 @@ export function OrderCard({
     }
   };
 
+  /* ---------- Render ---------- */
   return (
     <>
       <div
@@ -372,119 +369,124 @@ export function OrderCard({
 
           <CardContent className="pt-4 pb-2 flex-1">
             <div className="relative h-[300px] overflow-y-auto pr-1">
-              {Object.entries(itemsByDept).map(([dept, items]) => (
+              {Object.entries(filteredItemsByDept).map(([dept, items]) => (
                 <div key={dept} className="mb-3">
-                  {showDeptHeaders && (
-                    <div className="font-bold text-base border-b pb-1 mb-2">
-                      {dept}
-                    </div>
-                  )}
+                  <div className="font-bold text-base border-b pb-1 mb-2">
+                    {dept}
+                  </div>
                   <ul className="space-y-2">
-                    {items.map((it) => {
-                      const isChecked = it.itemStatus === "checked";
-                      const isCancelled = it.itemStatus === "cancelled";
-                      const mods = Array.isArray(it.mods) ? it.mods : [];
-                      const hasNotes =
-                        !!it.itemCode365 && notesAvailable.has(it.itemCode365);
-                      return (
-                        <li
-                          key={`${order.id}-${dept}-${it.id}`}
-                          className="grid grid-cols-[auto_auto_1fr_auto] gap-3 items-center pb-2 border-b last:border-0 rounded transition-colors select-none"
-                          onClick={(e) => handleItemClick(e, order.id, it.id)}
-                        >
-                          <div className={triBoxCls(it.itemStatus)}>
-                            {isChecked ? (
-                              <Check className="w-4 h-4" />
-                            ) : isCancelled ? (
-                              <X className="w-4 h-4" />
-                            ) : null}
-                          </div>
-
-                          <div className="font-extrabold text-lg md:text-xl">
-                            {it.qty}x
-                          </div>
-
-                          <div className="min-w-0">
-                            <div
-                              className={`font-bold text-base md:text-lg truncate ${
-                                it.itemStatus !== "none"
-                                  ? "line-through text-muted-foreground"
-                                  : ""
-                              }`}
-                            >
-                              {it.name}
+                    {items.length === 0 ? (
+                      <li className="text-sm text-muted-foreground italic">
+                        No items for this department
+                      </li>
+                    ) : (
+                      items.map((it) => {
+                        const isChecked = it.itemStatus === "checked";
+                        const isCancelled = it.itemStatus === "cancelled";
+                        const mods = Array.isArray(it.mods) ? it.mods : [];
+                        const hasNotes =
+                          !!it.itemCode365 &&
+                          notesAvailable.has(it.itemCode365);
+                        return (
+                          <li
+                            key={`${order.id}-${dept}-${it.id}`}
+                            className="grid grid-cols-[auto_auto_1fr_auto] gap-3 items-center pb-2 border-b last:border-0 rounded transition-colors select-none"
+                            onClick={(e) => handleItemClick(e, order.id, it.id)}
+                          >
+                            <div className={triBoxCls(it.itemStatus)}>
+                              {isChecked ? (
+                                <Check className="w-4 h-4" />
+                              ) : isCancelled ? (
+                                <X className="w-4 h-4" />
+                              ) : null}
                             </div>
 
-                            {/* Modifiers */}
-                            <div
-                              className={`text-xs md:text-sm mt-1 ${
-                                isCancelled
-                                  ? "line-through text-red-600"
-                                  : isChecked
-                                  ? "line-through text-muted-foreground"
-                                  : "text-muted-foreground"
-                              }`}
-                            >
-                              {mods.length > 0 && (
-                                <div className="flex flex-col gap-1">
-                                  {mods.map((m, index) => {
-                                    let icon = null;
-                                    let bgColor = "bg-gray-100";
-                                    if (
-                                      typeof m === "object" &&
-                                      m.modifier_prefix
-                                    ) {
-                                      const prefix =
-                                        m.modifier_prefix.toLowerCase();
-                                      if (prefix === "plus") {
-                                        icon = (
-                                          <PlusSquare className="w-4 h-4 inline mr-1 text-green-600" />
-                                        );
-                                        bgColor = "bg-green-50";
-                                      } else if (prefix === "no") {
-                                        icon = (
-                                          <MinusCircle className="w-4 h-4 inline mr-1 text-red-600" />
-                                        );
-                                        bgColor = "bg-red-50";
-                                      }
-                                    }
-                                    const displayText = m.modifier_name || m;
-                                    return (
-                                      <span
-                                        key={`mod-${index}`}
-                                        className={`inline-flex items-center p-1 font-semibold rounded-md ${bgColor} text-md`}
-                                      >
-                                        {icon}
-                                        {displayText}
-                                      </span>
-                                    );
-                                  })}
-                                </div>
-                              )}
+                            <div className="font-extrabold text-lg md:text-xl">
+                              {it.qty}x
                             </div>
-                          </div>
 
-                          {/* Notes button (right side) — SHOW ONLY IF ITEM HAS NOTES */}
-                          <div className="flex items-center">
-                            {hasNotes ? (
-                              <button
-                                type="button"
-                                title="View notes"
-                                aria-label="View notes"
-                                data-stop-item-click="true"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openNotesForItem(it);
-                                }}
-                                className="inline-flex items-center justify-center rounded-md border border-muted-foreground/30 hover:bg-white/5 h-8 w-8"
+                            <div className="min-w-0">
+                              <div
+                                className={`font-bold text-base md:text-lg truncate ${
+                                  it.itemStatus !== "none"
+                                    ? "line-through text-muted-foreground"
+                                    : ""
+                                }`}
                               >
-                                <Info className="w-4 h-4" />
-                              </button>
-                            ) : null}
-                          </div>
-                        </li>
-                      );
-                    })}
+                                {it.name}
+                              </div>
+
+                              {/* Modifiers */}
+                              <div
+                                className={`text-xs md:text-sm mt-1 ${
+                                  isCancelled
+                                    ? "line-through text-red-600"
+                                    : isChecked
+                                    ? "line-through text-muted-foreground"
+                                    : "text-muted-foreground"
+                                }`}
+                              >
+                                {mods.length > 0 && (
+                                  <div className="flex flex-col gap-1">
+                                    {mods.map((m, index) => {
+                                      let icon = null;
+                                      let bgColor = "bg-gray-100";
+                                      if (
+                                        typeof m === "object" &&
+                                        m.modifier_prefix
+                                      ) {
+                                        const prefix =
+                                          m.modifier_prefix.toLowerCase();
+                                        if (prefix === "plus") {
+                                          icon = (
+                                            <PlusSquare className="w-4 h-4 inline mr-1 text-green-600" />
+                                          );
+                                          bgColor = "bg-green-50";
+                                        } else if (prefix === "no") {
+                                          icon = (
+                                            <MinusCircle className="w-4 h-4 inline mr-1 text-red-600" />
+                                          );
+                                          bgColor = "bg-red-50";
+                                        }
+                                      }
+                                      const displayText = m.modifier_name || m;
+                                      return (
+                                        <span
+                                          key={`mod-${index}`}
+                                          className={`inline-flex items-center p-1 font-semibold rounded-md ${bgColor} text-md`}
+                                        >
+                                          {icon}
+                                          {displayText}
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Notes button */}
+                            <div className="flex items-center">
+                              {hasNotes ? (
+                                <button
+                                  type="button"
+                                  title="View notes"
+                                  aria-label="View notes"
+                                  data-stop-item-click="true"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openNotesForItem(it);
+                                  }}
+                                  className="inline-flex items-center justify-center rounded-md border border-muted-foreground/30 hover:bg-white/5 h-8 w-8"
+                                >
+                                  <Info className="w-4 h-4" />
+                                </button>
+                              ) : null}
+                            </div>
+                          </li>
+                        );
+                      })
+                    )}
                   </ul>
                 </div>
               ))}
@@ -500,7 +502,6 @@ export function OrderCard({
                     e.stopPropagation();
                     setEtaDialog &&
                       setEtaDialog({ open: true, orderId: order.id });
-                    // Color for time/ETA changes is amber (Color 3)
                     showActionToast({
                       action: "order.time.changed",
                       message: `Adjust ETA for #${order.id}`,
@@ -659,7 +660,7 @@ export function OrderCard({
   );
 }
 
-/** Reusable slide-to-confirm rail */
+/** Reusable Slide-to-Confirm rail */
 function SlideToConfirm({ value, setValue, onCommit, label, icon }) {
   const railRef = React.useRef(null);
   const [dragging, setDragging] = React.useState(false);
