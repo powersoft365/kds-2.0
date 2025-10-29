@@ -1,4 +1,5 @@
 "use client";
+
 import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -23,22 +24,52 @@ function useMediaQuery(query) {
 
 /**
  * Sidebar with expandable department sections.
- * Each item name can be clicked to filter orders by that item.
+ * ✅ Shows only selected departments (multi-select supported)
+ * ✅ Items sorted alphabetically
+ * ✅ Department codes never shown — kept internally only
  */
 export function Sidebar({
   sidebarOpen,
   setSidebarOpen,
   totalsByDept,
   t,
-  onItemClick, // new callback passed from parent (KdsPro)
+  onItemClick, // function(name)
+  selectedDepts = [], // multi-select from header
+  departmentMap = new Map(), // internal map (code hidden)
 }) {
-  const isDesktop = useMediaQuery("(min-width: 1024px)"); // lg
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
   const [expandedDepts, setExpandedDepts] = useState({});
-  const deptEntries = useMemo(
-    () => Object.entries(totalsByDept || {}),
-    [totalsByDept]
-  );
 
+  // ✅ Filter departments by selectedDepts
+  const filteredTotals = useMemo(() => {
+    if (!totalsByDept || typeof totalsByDept !== "object") return {};
+    if (selectedDepts.includes("All")) return totalsByDept;
+    const subset = {};
+    for (const dept of selectedDepts) {
+      if (totalsByDept[dept]) {
+        subset[dept] = totalsByDept[dept];
+      }
+    }
+    return subset;
+  }, [totalsByDept, selectedDepts]);
+
+  // ✅ Sort departments alphabetically, and their items alphabetically
+  const deptEntries = useMemo(() => {
+    const entries = Object.entries(filteredTotals || {});
+    entries.sort((a, b) =>
+      a[0].localeCompare(b[0], undefined, { sensitivity: "base" })
+    );
+    return entries.map(([dept, items]) => {
+      const sortedItems = Object.fromEntries(
+        Object.entries(items || {}).sort((a, b) =>
+          a[0].localeCompare(b[0], undefined, { sensitivity: "base" })
+        )
+      );
+      return [dept, sortedItems];
+    });
+  }, [filteredTotals]);
+
+  // expand all on desktop, collapse by default on mobile
   useEffect(() => {
     const init = {};
     deptEntries.forEach(([dept]) => {
@@ -56,7 +87,7 @@ export function Sidebar({
     return n % 1 === 0 ? n.toString() : n.toFixed(2);
   };
 
-  // Overlay for mobile drawer
+  // Overlay for mobile
   const Overlay =
     !isDesktop && sidebarOpen ? (
       <div
@@ -70,6 +101,7 @@ export function Sidebar({
   const MobileLauncher =
     !isDesktop && !sidebarOpen ? (
       <button
+        type="button"
         onClick={() => setSidebarOpen(true)}
         aria-label="Open totals"
         className="fixed z-30 left-2 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-primary text-primary-foreground shadow-lg border border-primary/40 flex items-center justify-center active:scale-95"
@@ -103,6 +135,7 @@ export function Sidebar({
             </h2>
           )}
           <Button
+            type="button"
             variant="ghost"
             size="icon"
             onClick={() => setSidebarOpen((o) => !o)}
@@ -129,11 +162,23 @@ export function Sidebar({
                 const expanded =
                   (isDesktop ? sidebarOpen : true) && expandedDepts[dept];
 
+                // ✅ Department code hidden — only log internally if needed
+                const deptCode = departmentMap.get(dept);
+                if (deptCode) {
+                  // This stays silent, no UI display
+                  console.debug(`Dept ${dept} (code ${deptCode})`);
+                }
+
                 return (
                   <div key={dept} className="group">
                     {/* Department header */}
                     <button
-                      onClick={() => toggleDeptExpand(dept)}
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        toggleDeptExpand(dept);
+                      }}
                       className={`w-full rounded-lg px-3 py-2.5 flex items-center justify-between transition
                         ${
                           isDesktop && !sidebarOpen
@@ -143,6 +188,7 @@ export function Sidebar({
                       aria-expanded={!!expanded}
                       title={dept}
                     >
+                      {/* ✅ Only show department name */}
                       <span
                         className={`font-bold truncate ${
                           isDesktop && !sidebarOpen
@@ -152,6 +198,7 @@ export function Sidebar({
                       >
                         {dept}
                       </span>
+
                       <span
                         className={`inline-flex items-center justify-center h-6 min-w-[1.75rem] rounded-full text-xs font-bold tabular-nums
                           ${
@@ -175,22 +222,26 @@ export function Sidebar({
                       >
                         <ul className="mt-3 space-y-2.5">
                           {Object.entries(items).map(([name, qty]) => (
-                            <li
-                              key={`${dept}-${name}`}
-                              className="grid grid-cols-[1fr_auto] items-center gap-3 text-sm px-3 py-2 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer"
-                              title={name}
-                              onClick={() => {
-                                if (typeof onItemClick === "function") {
-                                  onItemClick(name);
-                                }
-                              }}
-                            >
-                              <span className="truncate font-medium">
-                                {name}
-                              </span>
-                              <span className="font-bold tabular-nums text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-full">
-                                {fmtQty(qty)}x
-                              </span>
+                            <li key={`${dept}-${name}`} className="px-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (typeof onItemClick === "function") {
+                                    onItemClick(name);
+                                  }
+                                }}
+                                title={name}
+                                className="w-full grid grid-cols-[1fr_auto] items-center gap-3 text-sm px-3 py-2 rounded-lg hover:bg-muted/50 transition-colors text-left"
+                              >
+                                <span className="truncate font-medium">
+                                  {name}
+                                </span>
+                                <span className="font-bold tabular-nums text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-full">
+                                  {fmtQty(qty)}x
+                                </span>
+                              </button>
                             </li>
                           ))}
                         </ul>

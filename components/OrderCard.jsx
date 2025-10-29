@@ -29,10 +29,35 @@ import {
 } from "lucide-react";
 import { getItemNote, getItemsNotesMap } from "@/lib/api";
 import { showActionToast } from "@/components/Toast";
-
 /**
- * OrderCard component with department-aware item filtering and item Notes modal.
+ * Safely parse "YYYY-MM-DD HH:mm:ss" or ISO or timestamp to Date.
  */
+function parseDate(input) {
+  if (!input) return null;
+  if (typeof input === "number") return new Date(input);
+  if (typeof input !== "string") return null;
+  // Handle "2025-10-21 07:53:15" → convert to ISO-like
+  const isoLike = input.trim().replace(" ", "T");
+  const date = new Date(isoLike);
+  if (!isNaN(date.getTime())) return date;
+  // Fallback: try raw
+  const fallback = new Date(input);
+  return isNaN(fallback.getTime()) ? null : fallback;
+}
+/**
+ * Format createdAt to "HH:mm" in local time, safely.
+ */
+function formatOrderTime(createdAt, locale = "en-US") {
+  const date = parseDate(createdAt);
+  if (!date) return "";
+  return date
+    .toLocaleTimeString(locale, {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+    .replace(/\s/g, "");
+}
 export function OrderCard({
   order,
   toggleItemState,
@@ -42,7 +67,6 @@ export function OrderCard({
   setEtaDialog,
   setOrderDialog,
   t = (s) => s,
-  timeElapsedMin,
   calcSubStatus,
   actionLabelAndClass,
   statusBorder,
@@ -63,7 +87,6 @@ export function OrderCard({
       order.items.every((i) => i.itemStatus === "checked"),
     [order.items]
   );
-
   const rootRef = React.useRef(null);
   const [insideDialog, setInsideDialog] = React.useState(false);
   React.useEffect(() => {
@@ -75,7 +98,6 @@ export function OrderCard({
       setInsideDialog(false);
     }
   }, []);
-
   /* ---------- Slide-to-Undo ---------- */
   const [undoOpen, setUndoOpen] = React.useState(false);
   const [undoVal, setUndoVal] = React.useState([0]);
@@ -96,7 +118,6 @@ export function OrderCard({
       setTimeout(() => closeUndo(), 150);
     }
   };
-
   /* ---------- Slide-to-Revert ---------- */
   const [revertOpen, setRevertOpen] = React.useState(false);
   const [revertVal, setRevertVal] = React.useState([0]);
@@ -117,36 +138,40 @@ export function OrderCard({
       setTimeout(() => closeRevert(), 150);
     }
   };
-
   /* ---------- Items grouped by department ---------- */
   const itemsByDept = (order.items || []).reduce((acc, it) => {
     const d = it.dept || "General";
     (acc[d] ||= []).push(it);
     return acc;
   }, {});
-
-  // 🔹 Filter items by selected departments but keep department headers
+  const itemsByDeptSorted = React.useMemo(() => {
+    const out = {};
+    Object.entries(itemsByDept).forEach(([dept, items]) => {
+      const sorted = [...items].sort((a, b) =>
+        String(a.name || "")
+          .toLowerCase()
+          .localeCompare(String(b.name || "").toLowerCase())
+      );
+      out[dept] = sorted;
+    });
+    return out;
+  }, [itemsByDept]);
   const filteredItemsByDept = React.useMemo(() => {
     if (!Array.isArray(selectedDepts) || selectedDepts.includes("All"))
-      return itemsByDept;
+      return itemsByDeptSorted;
     const filtered = {};
-    for (const [dept, items] of Object.entries(itemsByDept)) {
-      if (selectedDepts.includes(dept)) {
-        filtered[dept] = items;
-      }
+    for (const [dept, items] of Object.entries(itemsByDeptSorted)) {
+      if (selectedDepts.includes(dept)) filtered[dept] = items;
     }
-    if (Object.keys(filtered).length === 0 && Object.keys(itemsByDept).length) {
-      const firstDept = Object.keys(itemsByDept)[0];
+    if (
+      Object.keys(filtered).length === 0 &&
+      Object.keys(itemsByDeptSorted).length
+    ) {
+      const firstDept = Object.keys(itemsByDeptSorted)[0];
       filtered[firstDept] = [];
     }
     return filtered;
-  }, [itemsByDept, selectedDepts]);
-
-  const showDeptHeaders =
-    Array.isArray(selectedDepts) &&
-    selectedDepts.includes("All") &&
-    Object.keys(itemsByDept).length > 1;
-
+  }, [itemsByDeptSorted, selectedDepts]);
   const subStatusBadge = (val) => {
     if (!val) return "";
     const base = "px-2.5 py-1 rounded-full text-xs font-bold";
@@ -156,13 +181,19 @@ export function OrderCard({
     if (val === "completed") return `${base} bg-emerald-600 text-white`;
     return `${base} bg-slate-600 text-white`;
   };
-
-  /* ---------- Countdown ---------- */
-  const startedAtMs = order.cookingStartedAt
-    ? typeof order.cookingStartedAt === "number"
-      ? order.cookingStartedAt
-      : Date.parse(order.cookingStartedAt)
-    : null;
+  /* ---------- Countdown Timer ---------- */
+  const [startedAtMs, setStartedAtMs] = React.useState(() => {
+    if (order.cookingStartedAt)
+      return typeof order.cookingStartedAt === "number"
+        ? order.cookingStartedAt
+        : Date.parse(order.cookingStartedAt);
+    return null;
+  });
+  React.useEffect(() => {
+    if (isCooking && !startedAtMs) {
+      setStartedAtMs(Date.now());
+    }
+  }, [isCooking, startedAtMs]);
   const etaMin = Math.max(0, Number(order.eta || 0));
   const totalMs = Math.max(1, etaMin * 60_000);
   const [now, setNow] = React.useState(() => Date.now());
@@ -171,7 +202,7 @@ export function OrderCard({
     return () => clearInterval(id);
   }, []);
   const remainingMs = (() => {
-    if (!startedAtMs) return totalMs;
+    if (!startedAtMs || !isCooking) return totalMs;
     const due = startedAtMs + totalMs;
     return due - now;
   })();
@@ -202,7 +233,6 @@ export function OrderCard({
         OVERDUE
       </span>
     ) : null;
-
   const handlePrimaryClick = () => {
     if (isCooking && !readyToComplete) {
       openRevert();
@@ -222,44 +252,19 @@ export function OrderCard({
     }
     onPrimaryAction && onPrimaryAction(order);
   };
-
   const borderCls =
     sub === "delayed" || remainingMs < 0
       ? "border-red-600"
       : statusBorder(order);
-
   /* ---------- Item click ---------- */
   const handleItemClick = (e, orderId, itemId) => {
     if (e.defaultPrevented || e.button !== 0) return;
     if (isCompleted) return;
     const target = e.target;
     if (target?.closest?.('[data-stop-item-click="true"]')) return;
-
-    const orderObj = order || {};
-    const current = (orderObj.items || []).find((it) => it.id === itemId);
-    const currentState = current?.itemStatus || "none";
-    const states = ["none", "checked", "cancelled"];
-    const nextState =
-      states[(states.indexOf(currentState) + 1) % states.length];
-
     toggleItemState(orderId, itemId);
-
-    if (nextState === "checked") {
-      showActionToast({
-        action: "order.item.checked",
-        message: `Line marked done`,
-      });
-    } else if (nextState === "cancelled") {
-      showActionToast({
-        action: "order.item.cancelled",
-        message: `Line cancelled`,
-      });
-    } else {
-      showActionToast({ action: "order.item.toggle", message: `Line toggled` });
-    }
   };
-
-  /* ---------- Notes modal state ---------- */
+  /* ---------- Notes modal ---------- */
   const [notesOpen, setNotesOpen] = React.useState(false);
   const [notesLoading, setNotesLoading] = React.useState(false);
   const [notesError, setNotesError] = React.useState("");
@@ -267,7 +272,6 @@ export function OrderCard({
   const [notesItemName, setNotesItemName] = React.useState("");
   const notesCacheRef = React.useRef(new Map());
   const [notesAvailable, setNotesAvailable] = React.useState(() => new Set());
-
   React.useEffect(() => {
     let alive = true;
     (async () => {
@@ -298,14 +302,12 @@ export function OrderCard({
       alive = false;
     };
   }, [order.items]);
-
   const openNotesForItem = async (item) => {
     setNotesItemName(item.name || "");
     const code = item.itemCode365 || "";
     setNotesText("");
     setNotesError("");
     setNotesOpen(true);
-
     if (!code) {
       setNotesError("No item code available for this line.");
       return;
@@ -331,8 +333,8 @@ export function OrderCard({
       setNotesLoading(false);
     }
   };
-
   /* ---------- Render ---------- */
+  const orderTime = formatOrderTime(order.createdAt);
   return (
     <>
       <div
@@ -349,150 +351,154 @@ export function OrderCard({
             sub === "on-hold" ? "shadow-[0_0_25px_rgba(139,92,246,0.6)]" : ""
           } hover:shadow-lg transition-all duration-200 grid grid-rows-[auto_1fr_auto] overflow-hidden ${
             isDragging
-              ? "shadow-2xl border-blue-500 ring-2 ring-blue-400"
+              ? "shadow-2xl border-blue-500 ring-2 ring-2 ring-blue-400"
               : "cursor-grab active:cursor-grabbing"
           }`}
         >
           <CardHeader className="flex flex-row items-center justify-between bg-muted/50 py-3">
             <div className="space-y-0.5">
-              <div className="font-extrabold text-xl tracking-tight">
-                #{order.id}
+              <div className="font-extrabold text-xs tracking-tight flex items-center gap-2">
+                <span>#{order.id}</span>
+                {orderTime && (
+                  <span className="text-muted-foreground font-normal">
+                    {orderTime}
+                  </span>
+                )}
               </div>
               <div className="text-sm text-muted-foreground">
-                {order.dest} ({order.type})
+                {order._raw?.invoice_header?.table_number && (
+                  <>Table: {order._raw.invoice_header.table_number}</>
+                )}
               </div>
             </div>
             {sub ? (
               <span className={subStatusBadge(sub)}>{sub.toUpperCase()}</span>
             ) : null}
           </CardHeader>
-
           <CardContent className="pt-4 pb-2 flex-1">
             <div className="relative h-[300px] overflow-y-auto pr-1">
-              {Object.entries(filteredItemsByDept).map(([dept, items]) => (
-                <div key={dept} className="mb-3">
-                  <div className="font-bold text-base border-b pb-1 mb-2">
-                    {dept}
-                  </div>
-                  <ul className="space-y-2">
-                    {items.length === 0 ? (
-                      <li className="text-sm text-muted-foreground italic">
-                        No items for this department
-                      </li>
-                    ) : (
-                      items.map((it) => {
-                        const isChecked = it.itemStatus === "checked";
-                        const isCancelled = it.itemStatus === "cancelled";
-                        const mods = Array.isArray(it.mods) ? it.mods : [];
-                        const hasNotes =
-                          !!it.itemCode365 &&
-                          notesAvailable.has(it.itemCode365);
-                        return (
-                          <li
-                            key={`${order.id}-${dept}-${it.id}`}
-                            className="grid grid-cols-[auto_auto_1fr_auto] gap-3 items-center pb-2 border-b last:border-0 rounded transition-colors select-none"
-                            onClick={(e) => handleItemClick(e, order.id, it.id)}
-                          >
-                            <div className={triBoxCls(it.itemStatus)}>
-                              {isChecked ? (
-                                <Check className="w-4 h-4" />
-                              ) : isCancelled ? (
-                                <X className="w-4 h-4" />
-                              ) : null}
-                            </div>
-
-                            <div className="font-extrabold text-lg md:text-xl">
-                              {it.qty}x
-                            </div>
-
-                            <div className="min-w-0">
-                              <div
-                                className={`font-bold text-base md:text-lg truncate ${
-                                  it.itemStatus !== "none"
-                                    ? "line-through text-muted-foreground"
-                                    : ""
-                                }`}
-                              >
-                                {it.name}
+              {Object.entries(filteredItemsByDept || {}).map(
+                ([dept, items]) => (
+                  <div key={dept} className="mb-3">
+                    <div className="font-bold text-base border-b pb-1 mb-2">
+                      {dept}
+                    </div>
+                    <ul className="space-y-2">
+                      {Array.isArray(items) && items.length === 0 ? (
+                        <li className="text-sm text-muted-foreground italic">
+                          No items for this department
+                        </li>
+                      ) : (
+                        (Array.isArray(items) ? items : []).map((it, index) => {
+                          const isChecked = it.itemStatus === "checked";
+                          const isCancelled = it.itemStatus === "cancelled";
+                          const mods = Array.isArray(it.mods) ? it.mods : [];
+                          const hasNotes =
+                            !!it.itemCode365 &&
+                            notesAvailable.has(it.itemCode365);
+                          return (
+                            <li
+                              key={`${order.id}-${dept}-${it.id || index}`}
+                              className="grid grid-cols-[auto_auto_1fr_auto] gap-3 items-center pb-2 border-b last:border-0 rounded transition-colors select-none"
+                              onClick={(e) =>
+                                handleItemClick(e, order.id, it.id)
+                              }
+                            >
+                              <div className={triBoxCls(it.itemStatus)}>
+                                {isChecked ? (
+                                  <Check className="w-4 h-4" />
+                                ) : isCancelled ? (
+                                  <X className="w-4 h-4" />
+                                ) : null}
                               </div>
-
-                              {/* Modifiers */}
-                              <div
-                                className={`text-xs md:text-sm mt-1 ${
-                                  isCancelled
-                                    ? "line-through text-red-600"
-                                    : isChecked
-                                    ? "line-through text-muted-foreground"
-                                    : "text-muted-foreground"
-                                }`}
-                              >
-                                {mods.length > 0 && (
-                                  <div className="flex flex-col gap-1">
-                                    {mods.map((m, index) => {
-                                      let icon = null;
-                                      let bgColor = "bg-gray-100";
-                                      if (
-                                        typeof m === "object" &&
-                                        m.modifier_prefix
-                                      ) {
-                                        const prefix =
-                                          m.modifier_prefix.toLowerCase();
-                                        if (prefix === "plus") {
-                                          icon = (
-                                            <PlusSquare className="w-4 h-4 inline mr-1 text-green-600" />
-                                          );
-                                          bgColor = "bg-green-50";
-                                        } else if (prefix === "no") {
-                                          icon = (
-                                            <MinusCircle className="w-4 h-4 inline mr-1 text-red-600" />
-                                          );
-                                          bgColor = "bg-red-50";
-                                        }
-                                      }
-                                      const displayText = m.modifier_name || m;
-                                      return (
-                                        <span
-                                          key={`mod-${index}`}
-                                          className={`inline-flex items-center p-1 font-semibold rounded-md ${bgColor} text-md`}
-                                        >
-                                          {icon}
-                                          {displayText}
-                                        </span>
-                                      );
-                                    })}
-                                  </div>
-                                )}
+                              <div className="font-extrabold text-lg md:text-xl">
+                                {it.qty}x
                               </div>
-                            </div>
-
-                            {/* Notes button */}
-                            <div className="flex items-center">
-                              {hasNotes ? (
-                                <button
-                                  type="button"
-                                  title="View notes"
-                                  aria-label="View notes"
-                                  data-stop-item-click="true"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openNotesForItem(it);
-                                  }}
-                                  className="inline-flex items-center justify-center rounded-md border border-muted-foreground/30 hover:bg-white/5 h-8 w-8"
+                              <div className="min-w-0">
+                                <div
+                                  className={`font-bold text-base md:text-lg truncate ${
+                                    it.itemStatus !== "none"
+                                      ? "line-through text-muted-foreground"
+                                      : ""
+                                  }`}
                                 >
-                                  <Info className="w-4 h-4" />
-                                </button>
-                              ) : null}
-                            </div>
-                          </li>
-                        );
-                      })
-                    )}
-                  </ul>
-                </div>
-              ))}
+                                  {it.name}
+                                </div>
+                                <div
+                                  className={`text-xs md:text-sm mt-1 ${
+                                    isCancelled
+                                      ? "line-through text-red-600"
+                                      : isChecked
+                                      ? "line-through text-muted-foreground"
+                                      : "text-muted-foreground"
+                                  }`}
+                                >
+                                  {mods.length > 0 && (
+                                    <div className="flex flex-col gap-1">
+                                      {mods.map((m, modIndex) => {
+                                        let icon = null;
+                                        let bgColor = "bg-gray-100";
+                                        if (
+                                          typeof m === "object" &&
+                                          m.modifier_prefix
+                                        ) {
+                                          const prefix =
+                                            m.modifier_prefix.toLowerCase();
+                                          if (prefix === "plus") {
+                                            icon = (
+                                              <PlusSquare className="w-4 h-4 inline mr-1 text-green-600" />
+                                            );
+                                            bgColor = "bg-green-50";
+                                          } else if (prefix === "no") {
+                                            icon = (
+                                              <MinusCircle className="w-4 h-4 inline mr-1 text-red-600" />
+                                            );
+                                            bgColor = "bg-red-50";
+                                          }
+                                        }
+                                        const displayText =
+                                          m.modifier_name || String(m);
+                                        return (
+                                          <span
+                                            key={`mod-${modIndex}`}
+                                            className={`inline-flex items-center p-1 font-semibold rounded-md ${bgColor} text-md`}
+                                          >
+                                            {icon}
+                                            {displayText}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center">
+                                {hasNotes ? (
+                                  <button
+                                    type="button"
+                                    title="View notes"
+                                    aria-label="View notes"
+                                    data-stop-item-click="true"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openNotesForItem(it);
+                                    }}
+                                    className="inline-flex items-center justify-center rounded-md border border-muted-foreground/30 hover:bg-white/5 h-8 w-8"
+                                  >
+                                    <Info className="w-4 h-4" />
+                                  </button>
+                                ) : null}
+                              </div>
+                            </li>
+                          );
+                        })
+                      )}
+                    </ul>
+                  </div>
+                )
+              )}
             </div>
           </CardContent>
-
           <CardFooter className="p-0">
             <div className="bg-muted/50 w-full p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -516,7 +522,6 @@ export function OrderCard({
                   <span className={`${countdownTone}`}>{fmt(remainingMs)}</span>
                   {overdue}
                 </button>
-
                 {insideDialog ? (
                   !isCompleted ? (
                     <div className="flex justify-center md:justify-end">
@@ -579,8 +584,7 @@ export function OrderCard({
           </CardFooter>
         </Card>
       </div>
-
-      {/* Slide-to-Undo */}
+      {/* Undo Slide Dialog */}
       <Dialog
         open={undoOpen}
         onOpenChange={(o) => (o ? openUndo() : closeUndo())}
@@ -603,8 +607,7 @@ export function OrderCard({
           />
         </DialogContent>
       </Dialog>
-
-      {/* Slide-to-Revert */}
+      {/* Revert Slide Dialog */}
       <Dialog
         open={revertOpen}
         onOpenChange={(o) => (o ? openRevert() : closeRevert())}
@@ -625,7 +628,6 @@ export function OrderCard({
           />
         </DialogContent>
       </Dialog>
-
       {/* Notes Modal */}
       <Dialog open={notesOpen} onOpenChange={setNotesOpen}>
         <DialogContent className="p-0 overflow-hidden">
@@ -659,8 +661,7 @@ export function OrderCard({
     </>
   );
 }
-
-/** Reusable Slide-to-Confirm rail */
+/** Slide-to-Confirm reusable rail */
 function SlideToConfirm({ value, setValue, onCommit, label, icon }) {
   const railRef = React.useRef(null);
   const [dragging, setDragging] = React.useState(false);

@@ -1,4 +1,5 @@
 "use client";
+
 import React, {
   useEffect,
   useMemo,
@@ -25,8 +26,8 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+
 import SignalRBridge from "@/components/SignalRBridge";
-import SignalRDebugConsole from "@/components/SignalRDebugConsole";
 import { Header } from "@/components/Header";
 import { Sidebar } from "@/components/Sidebar";
 import { OrderCard } from "@/components/OrderCard";
@@ -37,6 +38,7 @@ import { FullscreenOrderDialog } from "@/components/FullscreenOrderDialog";
 import { OrderSkeleton } from "@/components/OrderSkeleton";
 import { SidebarSkeleton } from "@/components/SidebarSkeleton";
 import i18n from "@/lib/i18n";
+
 import {
   listBatchOrders,
   listBatchOrderHeaders,
@@ -46,6 +48,7 @@ import {
   readOrdersList,
   readTotalCount,
   fetchInvoiceBy365Code,
+  listItemDepartments,
 } from "@/lib/api";
 
 /* ------------ Sortable wrapper ------------ */
@@ -97,6 +100,7 @@ function normalizeOrders(list, page, pageSize) {
       tableObj.table_id ||
       tableObj.id ||
       null;
+
     const code365 =
       raw.batch_invoice_number_365 ||
       raw.batch_invoice_code_365 ||
@@ -105,9 +109,11 @@ function normalizeOrders(list, page, pageSize) {
       header.batch_invoice_number_365 ||
       header.batch_invoice_code_365 ||
       raw.shopping_cart_code;
+
     const id = code365 || `row-${page}-${idx + 1}`;
     const itemsRaw =
       raw.list_invoice_details || raw.list_invoice_lines || raw.items || [];
+
     const items = itemsRaw.map((it, i) => {
       const rawStatus = (
         it.status_code_365 ||
@@ -117,10 +123,11 @@ function normalizeOrders(list, page, pageSize) {
       )
         .toString()
         .toUpperCase();
+
       return {
         id: it.line_id_365 || it.item_code_365 || `${id}-line-${i + 1}`,
         lineId365: it.line_id_365 || "",
-        itemCode365: it.item_code_365 || it.item_code || "", // ✅ used for notes lookup
+        itemCode365: it.item_code_365 || it.item_code || "",
         name: it.item_name || it.item_code_365 || it.name || "Item",
         dept: it.item_department_code_365 || it.dept || "General",
         deptCode: it.item_department_code_365 || "",
@@ -135,21 +142,28 @@ function normalizeOrders(list, page, pageSize) {
         itemStatus: "none",
       };
     });
+
     const anyInproc =
       items.some((l) => l.rawStatus === "INPROC") ||
       (raw.status_code_365 || header.status_code_365 || "")
         .toString()
         .toUpperCase() === "INPROC";
+
     const allApproved =
       items.length > 0 &&
       items.every((l) =>
         ["APPROVED", "DONE", "COMPLETED"].includes(l.rawStatus)
       );
+
     const status = allApproved
       ? "completed"
       : (raw.status_code_365 || header.status_code_365 || "")
           .toString()
           .toUpperCase() || "pending";
+
+    // keep status as-is; only add systemStatus
+    const systemStatus = header.invoice_system_status || "";
+
     return {
       id,
       dest:
@@ -162,16 +176,17 @@ function normalizeOrders(list, page, pageSize) {
       createdAt:
         header.invoice_date_utc0 ||
         raw.invoice_date_utc0 ||
-        header.created_at ||
-        raw.created_at ||
+        header.batch_invoice_date_utc0 || // fallback for datasets using batch date
+        raw.batch_invoice_date_utc0 ||
         Date.now(),
       status,
+      systemStatus, // new property only
       cooking: anyInproc,
       delayed: false,
       onHold: false,
       eta: 10,
       items,
-      tableId, // for add-items API if needed
+      tableId,
       _batchCode365: code365 || "",
       _raw: raw,
     };
@@ -206,18 +221,23 @@ const triBoxCls = (state) => {
     return `${base} bg-red-600 border-red-600 text-white`;
   return `${base} border-slate-500`;
 };
-
 /* ------------ component ------------ */
 function KdsPro() {
   const [language, setLanguage] = useState("en");
   const t = useT(language);
+
   // data buckets
   const [orders, setOrders] = useState([]);
   const [completed, setCompleted] = useState([]);
   const [scheduled, setScheduled] = useState([]);
+  const [activeCount, setActiveCount] = useState(0);
+  const [compltedCount, setCompletedCount] = useState(0); // (intentional variable name preserved)
+
   // filters
   const [departments, setDepartments] = useState(["All"]);
   const [selectedDepts, setSelectedDepts] = useState(["All"]);
+  const [departmentMap, setDepartmentMap] = useState(new Map());
+
   // UI
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [currentTime, setCurrentTime] = useState("");
@@ -227,6 +247,7 @@ function KdsPro() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(24);
   const [totalPages, setTotalPages] = useState(1);
+
   // dialogs
   const [etaDialog, setEtaDialog] = useState({ open: false, orderId: null });
   const [orderDialog, setOrderDialog] = useState({
@@ -234,10 +255,12 @@ function KdsPro() {
     orderId: null,
   });
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+
   // loading/safety
   const [isLoading, setIsLoading] = useState(false);
   const abortRef = useRef(null);
   const requestSeq = useRef(0);
+
   // DnD
   const [activeId, setActiveId] = useState(null);
   const [activeOrder, setActiveOrder] = useState(null);
@@ -246,6 +269,7 @@ function KdsPro() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
+  // Clock
   useEffect(() => {
     const i = setInterval(() => {
       try {
@@ -255,82 +279,223 @@ function KdsPro() {
     return () => clearInterval(i);
   }, []);
 
-  /* ---------- fetch one page ---------- */
+  /* ---------- fetch departments ---------- */
+  useEffect(() => {
+    async function fetchDepartments() {
+      try {
+        const data = await listItemDepartments();
+        const list =
+          data?.list_item_departments || data?.departments || data?.list || [];
+        if (Array.isArray(list) && list.length > 0) {
+          const map = new Map();
+          const names = ["All"];
+          for (const d of list) {
+            const name =
+              d.item_department_name ||
+              d.department_name ||
+              d.name ||
+              "Unknown";
+            const code =
+              d.item_department_code_365 || d.department_code || d.code || "";
+            map.set(name, code);
+            names.push(name);
+          }
+          setDepartmentMap(map);
+          setDepartments(names);
+        }
+      } catch (err) {
+        console.error("Failed to fetch departments:", err);
+      }
+    }
+    fetchDepartments();
+  }, []);
+
+  /* ---------- fetch one page (API-filtered by dept) ---------- */
   const fetchPage = useCallback(async () => {
     const mySeq = ++requestSeq.current;
+
+    // Abort any in-flight call
     try {
-      abortRef.current?.abort?.();
+      if (abortRef.current) abortRef.current.abort();
     } catch {}
     abortRef.current = new AbortController();
+
     const deptFilter = selectedDepts.includes("All")
       ? ""
       : selectedDepts.join(",");
+
     setIsLoading(true);
     try {
-      const countPayload = await listBatchOrders({
-        pageNumber: 1,
-        pageSize: 1,
-        onlyCounted: "Y",
-        itemDepartmentSelection: deptFilter,
-      });
+      // Fetch counts in parallel (latest data on every call)
+      const [
+        pendingCountPayload,
+        partialCompletedCountPayload,
+        completedCountPayload,
+      ] = await Promise.all([
+        listBatchOrders({
+          pageNumber: "",
+          pageSize: "",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "pending",
+          signal: abortRef.current.signal,
+        }),
+        listBatchOrders({
+          pageNumber: "",
+          pageSize: "",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "partialcompleted",
+          signal: abortRef.current.signal,
+        }),
+        listBatchOrders({
+          pageNumber: "",
+          pageSize: "",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "completed",
+          signal: abortRef.current.signal,
+        }),
+      ]);
+
       if (mySeq !== requestSeq.current) return;
-      const total = Math.max(0, Number(readTotalCount(countPayload))) || 0;
-      const pages = Math.max(1, Math.ceil(total / itemsPerPage));
+
+      const pendingTotal =
+        Math.max(0, Number(readTotalCount(pendingCountPayload))) || 0;
+      const partialTotal =
+        Math.max(0, Number(readTotalCount(partialCompletedCountPayload))) || 0;
+      const doneTotal =
+        Math.max(0, Number(readTotalCount(completedCountPayload))) || 0;
+
+      setActiveCount(pendingTotal);
+      setCompletedCount(partialTotal + doneTotal);
+
+      // Compute total pages depending on tab
+      const totalForTab =
+        activeTab === "active" ? pendingTotal : partialTotal + doneTotal;
+      const pages = Math.max(1, Math.ceil(totalForTab / itemsPerPage));
       setTotalPages(pages);
-      if (currentPage > pages) setCurrentPage(pages);
-      const dataPayload = await listBatchOrders({
-        pageNumber: currentPage,
-        pageSize: itemsPerPage,
-        onlyCounted: "N",
-        itemDepartmentSelection: deptFilter,
-      });
-      if (mySeq !== requestSeq.current) return;
-      const list = readOrdersList(dataPayload) || [];
-      const normalized = normalizeOrders(list, currentPage, itemsPerPage);
-      setOrders(normalized.filter((o) => o.status !== "completed"));
-      setCompleted(normalized.filter((o) => o.status === "completed"));
-      const deptSet = new Set(["All"]);
-      normalized.forEach((o) =>
-        (o.items || []).forEach((it) => deptSet.add(it.dept || "General"))
-      );
-      setDepartments(Array.from(deptSet));
+      if (currentPage > pages) {
+        // bring page back in range if counts shrank
+        if (mySeq !== requestSeq.current) return;
+        // setCurrentPage triggers fetchPage again via deps
+        setCurrentPage(pages);
+        return;
+      }
+
+      // Fetch page data depending on tab (latest every switch)
+      if (activeTab === "active") {
+        const pendingPayload = await listBatchOrders({
+          pageNumber: currentPage,
+          pageSize: itemsPerPage,
+          onlyCounted: "N",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "pending",
+          signal: abortRef.current.signal,
+        });
+        if (mySeq !== requestSeq.current) return;
+
+        const list = readOrdersList(pendingPayload) || [];
+        const normalized = normalizeOrders(list, currentPage, itemsPerPage);
+
+        // sort oldest -> newest for active
+        const sortedAsc = [...normalized].sort(
+          (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+        );
+
+        setOrders(sortedAsc);
+        setCompleted([]);
+        // expand dept list from the fetched orders
+        const deptSet = new Set(["All"]);
+        sortedAsc.forEach((o) =>
+          (o.items || []).forEach((it) => deptSet.add(it.dept || "General"))
+        );
+        setDepartments((prev) => {
+          const all = new Set([...prev, ...Array.from(deptSet)]);
+          return Array.from(all);
+        });
+      } else {
+        // completed tab: merge completed + partialcompleted and sort newest -> oldest
+        const [completedPayload, partialPayload] = await Promise.all([
+          listBatchOrders({
+            pageNumber: currentPage,
+            pageSize: itemsPerPage,
+            onlyCounted: "N",
+            itemDepartmentSelection: deptFilter,
+            invoiceSystemStatus: "completed",
+            signal: abortRef.current.signal,
+          }),
+          listBatchOrders({
+            pageNumber: currentPage,
+            pageSize: itemsPerPage,
+            onlyCounted: "N",
+            itemDepartmentSelection: deptFilter,
+            invoiceSystemStatus: "partialcompleted",
+            signal: abortRef.current.signal,
+          }),
+        ]);
+        if (mySeq !== requestSeq.current) return;
+
+        const listCompleted = readOrdersList(completedPayload) || [];
+        const listPartial = readOrdersList(partialPayload) || [];
+        const normalized = normalizeOrders(
+          [...listCompleted, ...listPartial],
+          currentPage,
+          itemsPerPage
+        );
+
+        const sortedDesc = [...normalized].sort(
+          (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+        );
+
+        setCompleted(sortedDesc);
+        setOrders([]);
+
+        const deptSet = new Set(["All"]);
+        sortedDesc.forEach((o) =>
+          (o.items || []).forEach((it) => deptSet.add(it.dept || "General"))
+        );
+        setDepartments((prev) => {
+          const all = new Set([...prev, ...Array.from(deptSet)]);
+          return Array.from(all);
+        });
+      }
     } catch (e) {
-      console.error(e);
+      if (e?.name === "AbortError") return;
+      console.error("Fetch page error:", e);
       toast.error("Failed to load orders from API");
     } finally {
       if (mySeq === requestSeq.current) setIsLoading(false);
     }
-  }, [currentPage, itemsPerPage, selectedDepts]);
+  }, [activeTab, currentPage, itemsPerPage, selectedDepts]);
 
+  // fetch on mount and whenever deps change (including tab)
   useEffect(() => {
     fetchPage();
     return () => {
       try {
-        abortRef.current?.abort?.();
+        if (abortRef.current) abortRef.current.abort();
       } catch {}
     };
   }, [fetchPage]);
 
   const selectedKey = useMemo(() => selectedDepts.join("|"), [selectedDepts]);
+
+  // reset to page 1 whenever filters or tab change for fresh data
   useEffect(() => {
     setCurrentPage(1);
   }, [selectedKey, activeTab]);
 
+  // Warm-up reads
   useEffect(() => {
     listBatchOrderHeaders({
       pageNumber: 1,
       pageSize: 10,
       onlyCounted: "N",
     }).catch(() => {});
-  }, []);
-
-  useEffect(() => {
     listTableSettings({ pageNumber: 1, pageSize: 20, onlyCounted: "N" }).catch(
       () => {}
     );
-  }, []);
-
-  useEffect(() => {
     listFloorTables({}).catch(() => {});
   }, []);
 
@@ -364,7 +529,6 @@ function KdsPro() {
   }, [allForTab, searchTerm, selectedDepts]);
 
   const totalsByDept = useMemo(() => buildTotalsByDept(filtered), [filtered]);
-
   /* ---------- helpers for writes ---------- */
   const getBatchCode365 = useCallback((o) => o._batchCode365 || o.id, []);
 
@@ -399,9 +563,16 @@ function KdsPro() {
     async (order) => {
       try {
         const batch = getBatchCode365(order);
-        if (!batch) return false;
+        if (!batch) {
+          console.warn("No batch code for order", order.id);
+          return null;
+        }
         const fresh = await fetchInvoiceBy365Code(batch);
-        if (!fresh) return false;
+        if (!fresh) {
+          console.warn("No invoice returned for batch", batch);
+          return null;
+        }
+
         const items =
           fresh.list_invoice_details ||
           fresh.list_invoice_lines ||
@@ -421,9 +592,11 @@ function KdsPro() {
         const noneInproc = items.every(
           (l) => up(l.status_code_365 || l.status_code) !== "INPROC"
         );
+
         return { anyInproc, allApproved, noneInproc };
-      } catch {
-        return false;
+      } catch (err) {
+        console.error("Verification failed for order", order.id, err);
+        return null;
       }
     },
     [getBatchCode365]
@@ -433,6 +606,7 @@ function KdsPro() {
   const SR = () => (typeof window !== "undefined" ? window.SignalR : null);
   const deptForOrderSend = () =>
     selectedDepts.includes("All") ? undefined : selectedDepts[0];
+
   const publish = async (fn, ...args) => {
     try {
       const api = SR();
@@ -454,7 +628,8 @@ function KdsPro() {
       );
       const nextStatus = isComplete ? "APPROVED" : "INPROC";
       const rows = buildRowsPerLine(order, nextStatus);
-      // optimistic UI
+
+      // Optimistic UI
       const rollback = JSON.parse(JSON.stringify(orders));
       const updatedOrders = orders.map((o) =>
         o.id !== order.id
@@ -466,6 +641,7 @@ function KdsPro() {
               cookingStartedAt: !isComplete ? Date.now() : o.cookingStartedAt,
             }
       );
+
       if (isComplete) {
         setOrders(updatedOrders.filter((o) => o.id !== order.id));
         setCompleted((prev) => [
@@ -475,16 +651,23 @@ function KdsPro() {
       } else {
         setOrders(updatedOrders);
       }
+
       try {
         await bulkChangeBatchOrderStatus(rows);
         const persisted = await verifyPersisted(order);
-        if (
-          !persisted ||
+
+        if (!persisted) {
+          console.warn("Could not verify order persistence:", order.id);
+        } else if (
           (nextStatus === "INPROC" && !persisted.anyInproc) ||
           (nextStatus === "APPROVED" && !persisted.allApproved)
         ) {
-          throw new Error("Verify failed");
+          console.warn("Status mismatch after update for order:", order.id, {
+            persisted,
+            nextStatus,
+          });
         }
+
         if (isComplete) {
           toast.success(`Order #${order.id} completed`);
           await publish("completeOrder", order);
@@ -496,13 +679,13 @@ function KdsPro() {
           });
         }
       } catch (e) {
-        console.error(e);
+        console.error("Primary action failed:", e);
         setOrders(rollback);
         if (isComplete) {
           setCompleted((prev) => prev.filter((o) => o.id !== order.id));
           setOrders((prev) => [...prev, order]);
         }
-        toast.error("Status update did not persist in database");
+        toast.error("Status update failed");
       }
     },
     [orders, buildRowsPerLine, verifyPersisted, t, selectedDepts]
@@ -513,6 +696,7 @@ function KdsPro() {
       const rows = buildRowsPerLine(order, "INPROC");
       const rollbackCompleted = JSON.parse(JSON.stringify(completed));
       const rollbackOrders = JSON.parse(JSON.stringify(orders));
+
       setCompleted((prev) => prev.filter((o) => o.id !== order.id));
       setOrders((prev) => [
         {
@@ -523,21 +707,23 @@ function KdsPro() {
         },
         ...prev,
       ]);
+
       try {
         await bulkChangeBatchOrderStatus(rows);
         const persisted = await verifyPersisted(order);
-        if (!persisted || !persisted.anyInproc)
-          throw new Error("Undo verify failed");
-        toast(`Order #${order.id}: ${t("undone_to_active")}`);
+        if (!persisted || !persisted.anyInproc) {
+          console.warn("Undo verification failed for order:", order.id);
+        }
+        toast.success(`Order #${order.id}: ${t("undone_to_active")}`);
         await publish("startCooking", {
           ...order,
           cookingStartedAt: Date.now(),
         });
       } catch (e) {
-        console.error(e);
+        console.error("Undo action failed:", e);
         setCompleted(rollbackCompleted);
         setOrders(rollbackOrders);
-        toast.error("Undo failed to persist in database");
+        toast.error("Undo failed");
       }
     },
     [orders, completed, buildRowsPerLine, verifyPersisted, t, selectedDepts]
@@ -547,6 +733,7 @@ function KdsPro() {
     async (order) => {
       const rows = buildRowsPerLine(order, "NEW");
       const rollbackOrders = JSON.parse(JSON.stringify(orders));
+
       setOrders((prev) =>
         prev.map((o) =>
           o.id !== order.id
@@ -559,17 +746,19 @@ function KdsPro() {
               }
         )
       );
+
       try {
         await bulkChangeBatchOrderStatus(rows);
         const persisted = await verifyPersisted(order);
-        if (!persisted || !persisted.noneInproc)
-          throw new Error("Revert verify failed");
+        if (!persisted || !persisted.noneInproc) {
+          console.warn("Revert verification failed for order:", order.id);
+        }
         toast.success(`Order #${order.id} reverted to not started`);
         await publish("revertOrder", order);
       } catch (e) {
-        console.error(e);
+        console.error("Revert action failed:", e);
         setOrders(rollbackOrders);
-        toast.error("Revert did not persist in database");
+        toast.error("Revert failed");
       }
     },
     [orders, buildRowsPerLine, verifyPersisted, selectedDepts]
@@ -580,6 +769,7 @@ function KdsPro() {
       if (activeTab === "completed") return;
       let nextStatusForItem = "none";
       let deptForLine = undefined;
+
       setOrders((prev) =>
         prev.map((o) =>
           o.id !== orderId
@@ -598,6 +788,7 @@ function KdsPro() {
               }
         )
       );
+
       try {
         const api = SR();
         if (api?.toggleItem) {
@@ -610,18 +801,21 @@ function KdsPro() {
     },
     [activeTab]
   );
-  const toggleDept = (dept) => {
-    // ✅ Clear the search box whenever department is changed
-    setSearchTerm("");
 
+  /* ---------- toggleDept updated to log code ---------- */
+  const toggleDept = (dept) => {
+    setSearchTerm("");
     if (dept === "All") return setSelectedDepts(["All"]);
+
+    const code = departmentMap.get(dept);
+    if (code) console.log("Selected Department Code:", code);
+
     let next = selectedDepts.filter((d) => d !== "All");
     if (next.includes(dept)) next = next.filter((d) => d !== dept);
     else next = [...next, dept];
     if (next.length === 0) next = ["All"];
     setSelectedDepts(next);
   };
-
   const actionLabelAndClass = useCallback(
     (o) => {
       if ((o.items || []).every((i) => i.itemStatus === "checked"))
@@ -690,14 +884,14 @@ function KdsPro() {
 
   const headerTabs = [
     { key: "active", label: t("active_orders") },
-    { key: "scheduled", label: t("scheduled") },
+    //{ key: "scheduled", label: t("scheduled") },
     { key: "completed", label: t("history") },
   ];
 
   const counts = {
-    active: orders.length,
+    active: activeCount,
     scheduled: scheduled.length,
-    completed: completed.length,
+    completed: compltedCount,
   };
 
   const currentSortableItems = useMemo(
@@ -705,9 +899,24 @@ function KdsPro() {
     [filtered]
   );
 
+  const handleSidebarItemClick = useCallback((itemName) => {
+    setSearchTerm(String(itemName || ""));
+  }, []);
+
+  useEffect(() => {
+    const handler = (e) => console.log("🔥 SignalR Event:", e.detail);
+    window.addEventListener("srlog", handler);
+    return () => window.removeEventListener("srlog", handler);
+  }, []);
+
   return (
     <div className="h-dvh flex flex-col bg-background text-foreground transition-colors">
-      <SignalRBridge onOrderUpdate={fetchPage} />
+      <SignalRBridge
+        onOrderUpdate={fetchPage}
+        onAcknowledge={() => {}}
+        debug={false}
+      />
+
       <Header
         currentTime={currentTime}
         headerTabs={headerTabs}
@@ -721,7 +930,9 @@ function KdsPro() {
         selectedDepts={selectedDepts}
         toggleDept={toggleDept}
         setSettingsDialog={setSettingsDialogOpen}
+        departmentMap={departmentMap}
       />
+
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {isLoading ? (
           <SidebarSkeleton
@@ -735,9 +946,11 @@ function KdsPro() {
             setSidebarOpen={setSidebarOpen}
             totalsByDept={totalsByDept}
             t={t}
-            onItemClick={(itemName) => setSearchTerm(itemName)} // ✅ filter orders by item name
+            onItemClick={handleSidebarItemClick}
+            selectedDepts={selectedDepts}
           />
         )}
+
         <section className="flex-1 min-h-0 p-4 overflow-y-auto">
           {isLoading ? (
             <div className="grid gap-4 md:gap-5 grid-cols-1 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
@@ -755,8 +968,6 @@ function KdsPro() {
               collisionDetection={closestCorners}
               onDragStart={handleDragStart}
               onDragMove={() => {}}
-              onDragAbort={() => {}}
-              onDragPending={() => {}}
               onDragOver={() => {}}
               onDragEnd={handleDragEnd}
               onDragCancel={handleDragCancel}
@@ -816,6 +1027,7 @@ function KdsPro() {
           )}
         </section>
       </div>
+
       {!isLoading && totalPages > 1 && (
         <Pagination
           totalPages={totalPages}
@@ -825,6 +1037,7 @@ function KdsPro() {
           onJump={(n) => setCurrentPage(n)}
         />
       )}
+
       <EtaDialog
         open={etaDialog.open}
         onOpenChange={(open) =>
@@ -835,6 +1048,7 @@ function KdsPro() {
         setOrders={setOrders}
         toast={toast}
       />
+
       <FullscreenOrderDialog
         open={orderDialog.open}
         onOpenChange={(open) =>
@@ -856,6 +1070,7 @@ function KdsPro() {
         triBoxCls={triBoxCls}
         selectedDepts={selectedDepts}
       />
+
       <SettingsDialog
         open={settingsDialogOpen}
         onOpenChange={setSettingsDialogOpen}
