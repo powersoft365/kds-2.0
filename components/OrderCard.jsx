@@ -75,6 +75,7 @@ export function OrderCard({
   isDragging = false,
   dragHandleProps = {},
 }) {
+  // console.log("ordercard", order);
   const sub = calcSubStatus(order);
   const { label: actionText = "Action", cls: actionClass = "" } =
     actionLabelAndClass(order) || {};
@@ -351,7 +352,7 @@ export function OrderCard({
             sub === "on-hold" ? "shadow-[0_0_25px_rgba(139,92,246,0.6)]" : ""
           } hover:shadow-lg transition-all duration-200 grid grid-rows-[auto_1fr_auto] overflow-hidden ${
             isDragging
-              ? "shadow-2xl border-blue-500 ring-2 ring-2 ring-blue-400"
+              ? "shadow-2xl border-blue-500 ring-2  ring-blue-400"
               : "cursor-grab active:cursor-grabbing"
           }`}
         >

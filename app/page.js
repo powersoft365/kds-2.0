@@ -161,7 +161,7 @@ function normalizeOrders(list, page, pageSize) {
           .toString()
           .toUpperCase() || "pending";
 
-    // keep status as-is; only add systemStatus
+    // ✅ Add systemStatus directly from header (no effect on status)
     const systemStatus = header.invoice_system_status || "";
 
     return {
@@ -176,11 +176,11 @@ function normalizeOrders(list, page, pageSize) {
       createdAt:
         header.invoice_date_utc0 ||
         raw.invoice_date_utc0 ||
-        header.batch_invoice_date_utc0 || // fallback for datasets using batch date
-        raw.batch_invoice_date_utc0 ||
+        header.created_at ||
+        raw.created_at ||
         Date.now(),
       status,
-      systemStatus, // new property only
+      systemStatus, // ✅ added new property here
       cooking: anyInproc,
       delayed: false,
       onHold: false,
@@ -231,8 +231,7 @@ function KdsPro() {
   const [completed, setCompleted] = useState([]);
   const [scheduled, setScheduled] = useState([]);
   const [activeCount, setActiveCount] = useState(0);
-  const [compltedCount, setCompletedCount] = useState(0); // (intentional variable name preserved)
-
+  const [compltedCount, setCompletedCount] = useState(0);
   // filters
   const [departments, setDepartments] = useState(["All"]);
   const [selectedDepts, setSelectedDepts] = useState(["All"]);
@@ -284,6 +283,7 @@ function KdsPro() {
     async function fetchDepartments() {
       try {
         const data = await listItemDepartments();
+
         const list =
           data?.list_item_departments || data?.departments || data?.list || [];
         if (Array.isArray(list) && list.length > 0) {
@@ -314,9 +314,10 @@ function KdsPro() {
   const fetchPage = useCallback(async () => {
     const mySeq = ++requestSeq.current;
 
-    // Abort any in-flight call
     try {
-      if (abortRef.current) abortRef.current.abort();
+      if (abortRef.current) {
+        abortRef.current.abort();
+      }
     } catch {}
     abortRef.current = new AbortController();
 
@@ -326,140 +327,110 @@ function KdsPro() {
 
     setIsLoading(true);
     try {
-      // Fetch counts in parallel (latest data on every call)
-      const [
-        pendingCountPayload,
-        partialCompletedCountPayload,
-        completedCountPayload,
-      ] = await Promise.all([
-        listBatchOrders({
-          pageNumber: "",
-          pageSize: "",
-          onlyCounted: "Y",
-          itemDepartmentSelection: deptFilter,
-          invoiceSystemStatus: "pending",
-          signal: abortRef.current.signal,
-        }),
-        listBatchOrders({
-          pageNumber: "",
-          pageSize: "",
-          onlyCounted: "Y",
-          itemDepartmentSelection: deptFilter,
-          invoiceSystemStatus: "partialcompleted",
-          signal: abortRef.current.signal,
-        }),
-        listBatchOrders({
-          pageNumber: "",
-          pageSize: "",
-          onlyCounted: "Y",
-          itemDepartmentSelection: deptFilter,
-          invoiceSystemStatus: "completed",
-          signal: abortRef.current.signal,
-        }),
-      ]);
+      const countPayloadpending = await listBatchOrders({
+        pageNumber: "1",
+        pageSize: "24",
+        onlyCounted: "Y",
+        itemDepartmentSelection: deptFilter,
+        invoiceSystemStatus: "NEW,INPROC",
+        signal: abortRef.current.signal,
+      });
+
+      const completedCountPayload = await listBatchOrders({
+        pageNumber: "1",
+        pageSize: "24",
+        onlyCounted: "Y",
+        itemDepartmentSelection: deptFilter,
+        invoiceSystemStatus: "REJECTED,APPROVED",
+        signal: abortRef.current.signal,
+      });
+
+      const activeordersCount = countPayloadpending.total_count_list_invoices;
+      const completedordersCount =
+        completedCountPayload.total_count_list_invoices;
+      console.log(readTotalCount(countPayloadpending));
+      console.log(readTotalCount(completedCountPayload));
+      setActiveCount(activeordersCount);
+      setCompletedCount(completedordersCount);
+
+      /*  follow the instruction and implement it */
+      //      1) get page X of pending (if pending count > 0) - sort by batch_invoice_date_utc0 - from oldest to newest
+
+      // ----------------- history:
+      //      1) get page X of completed (if completed count > 0) - sort by batch_invoice_date_utc0 - from newest to oldest
+      // const completedDataPayload = await listBatchOrders({
+      //   pageNumber: currentPage,
+      //   pageSize: itemsPerPage,
+      //   onlyCounted: "N",
+      //   invoice_system_status = completed
+      //   itemDepartmentSelection: deptFilter,
+      //   signal: abortRef.current.signal,
+      // });
+      //      2) get page X of partially completed (if partially completed count > 0) - sort by batch_invoice_date_utc0 - from oldest to newest
+      //      3) concat two lists (pendingDataPayload + partialCompletedDataPayload).sort(batch_invoice_date_utc0 - from oldest to newest)
+
+      // --------------------------
+      // 4) normalize orders
+      // 5) filter orders items (show based on selected depts) - keep order with only relevant items
+      // 6) count totals (based on items in orders AFTER step 5)
+      // 7) get unique item codes from orders (after we fitlered them) - locally
+      // 8) fetch items from API based on unique codes
+      // 9) cycle through orders items and map each order item to the fetched item (for notes)
+      // 10) update UI
+
+      // -----------------------
+      // ON CHANGE:
+      // 1) fetch orders (follow strategy above)
+      // 2) get unique item codes from orders (after we fitlered them) - locally
+      // 3) get onlt items that were not fetched before
+      // 4) remove items that were fetched but not present in the current orders list
+      // 5) fetch items based on missing item codes - concat with items
+      // 6) cyclte through orders items to assign item info (for notes)
 
       if (mySeq !== requestSeq.current) return;
-
-      const pendingTotal =
-        Math.max(0, Number(readTotalCount(pendingCountPayload))) || 0;
-      const partialTotal =
-        Math.max(0, Number(readTotalCount(partialCompletedCountPayload))) || 0;
-      const doneTotal =
-        Math.max(0, Number(readTotalCount(completedCountPayload))) || 0;
-
-      setActiveCount(pendingTotal);
-      setCompletedCount(partialTotal + doneTotal);
-
-      // Compute total pages depending on tab
-      const totalForTab =
-        activeTab === "active" ? pendingTotal : partialTotal + doneTotal;
-      const pages = Math.max(1, Math.ceil(totalForTab / itemsPerPage));
+      const total =
+        Math.max(0, Number(readTotalCount(countPayloadpending))) || 0;
+      console.log(total);
+      const pages = Math.max(1, Math.ceil(total / itemsPerPage));
       setTotalPages(pages);
-      if (currentPage > pages) {
-        // bring page back in range if counts shrank
-        if (mySeq !== requestSeq.current) return;
-        // setCurrentPage triggers fetchPage again via deps
-        setCurrentPage(pages);
-        return;
-      }
+      if (currentPage > pages) setCurrentPage(pages);
 
-      // Fetch page data depending on tab (latest every switch)
-      if (activeTab === "active") {
-        const pendingPayload = await listBatchOrders({
-          pageNumber: currentPage,
-          pageSize: itemsPerPage,
-          onlyCounted: "N",
-          itemDepartmentSelection: deptFilter,
-          invoiceSystemStatus: "pending",
-          signal: abortRef.current.signal,
-        });
-        if (mySeq !== requestSeq.current) return;
+      const dataPayload = await listBatchOrders({
+        pageNumber: currentPage,
+        pageSize: itemsPerPage,
+        onlyCounted: "N",
+        itemDepartmentSelection: deptFilter,
+        signal: abortRef.current.signal,
+        invoiceSystemStatus:
+          activeTab === "active" ? "NEW,INPROC" : "REJECTED,APPROVED",
+      });
+      if (mySeq !== requestSeq.current) return;
+      const list = readOrdersList(dataPayload) || [];
+      const normalized = normalizeOrders(list, currentPage, itemsPerPage);
+      console.log(normalized);
 
-        const list = readOrdersList(pendingPayload) || [];
-        const normalized = normalizeOrders(list, currentPage, itemsPerPage);
-
-        // sort oldest -> newest for active
-        const sortedAsc = [...normalized].sort(
-          (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
-        );
-
-        setOrders(sortedAsc);
-        setCompleted([]);
-        // expand dept list from the fetched orders
-        const deptSet = new Set(["All"]);
-        sortedAsc.forEach((o) =>
-          (o.items || []).forEach((it) => deptSet.add(it.dept || "General"))
-        );
-        setDepartments((prev) => {
-          const all = new Set([...prev, ...Array.from(deptSet)]);
-          return Array.from(all);
-        });
-      } else {
-        // completed tab: merge completed + partialcompleted and sort newest -> oldest
-        const [completedPayload, partialPayload] = await Promise.all([
-          listBatchOrders({
-            pageNumber: currentPage,
-            pageSize: itemsPerPage,
-            onlyCounted: "N",
-            itemDepartmentSelection: deptFilter,
-            invoiceSystemStatus: "completed",
-            signal: abortRef.current.signal,
-          }),
-          listBatchOrders({
-            pageNumber: currentPage,
-            pageSize: itemsPerPage,
-            onlyCounted: "N",
-            itemDepartmentSelection: deptFilter,
-            invoiceSystemStatus: "partialcompleted",
-            signal: abortRef.current.signal,
-          }),
-        ]);
-        if (mySeq !== requestSeq.current) return;
-
-        const listCompleted = readOrdersList(completedPayload) || [];
-        const listPartial = readOrdersList(partialPayload) || [];
-        const normalized = normalizeOrders(
-          [...listCompleted, ...listPartial],
-          currentPage,
-          itemsPerPage
-        );
-
-        const sortedDesc = [...normalized].sort(
-          (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-        );
-
-        setCompleted(sortedDesc);
-        setOrders([]);
-
-        const deptSet = new Set(["All"]);
-        sortedDesc.forEach((o) =>
-          (o.items || []).forEach((it) => deptSet.add(it.dept || "General"))
-        );
-        setDepartments((prev) => {
-          const all = new Set([...prev, ...Array.from(deptSet)]);
-          return Array.from(all);
-        });
-      }
+      setOrders(
+        normalized.filter(
+          (o) =>
+            o.systemStatus !== "COMPLETED" ||
+            o.systemStatus !== "partialcompleted"
+        )
+      );
+      setCompleted(normalized.filter((o) => o.systemStatus === "COMPLETED"));
+      /*
+      console.log(
+        "system status",
+        normalized.filter((o) => o.systemStatus === "COMPLETED")
+      );
+      */
+      const deptSet = new Set(["All"]);
+      normalized.forEach((o) =>
+        (o.items || []).forEach((it) => deptSet.add(it.dept || "General"))
+      );
+      setDepartments((prev) => {
+        const all = new Set([...prev, ...Array.from(deptSet)]);
+        return Array.from(all);
+      });
     } catch (e) {
       if (e?.name === "AbortError") return;
       console.error("Fetch page error:", e);
@@ -467,9 +438,8 @@ function KdsPro() {
     } finally {
       if (mySeq === requestSeq.current) setIsLoading(false);
     }
-  }, [activeTab, currentPage, itemsPerPage, selectedDepts]);
+  }, [currentPage, itemsPerPage, selectedDepts]);
 
-  // fetch on mount and whenever deps change (including tab)
   useEffect(() => {
     fetchPage();
     return () => {
@@ -480,8 +450,6 @@ function KdsPro() {
   }, [fetchPage]);
 
   const selectedKey = useMemo(() => selectedDepts.join("|"), [selectedDepts]);
-
-  // reset to page 1 whenever filters or tab change for fresh data
   useEffect(() => {
     setCurrentPage(1);
   }, [selectedKey, activeTab]);
@@ -846,6 +814,7 @@ function KdsPro() {
       const { active } = event;
       setActiveId(active.id);
       const foundOrder = filtered.find((order) => order.id === active.id);
+      // console.log("formdorder", foundOrder);
       setActiveOrder(foundOrder || null);
     },
     [filtered]
@@ -893,7 +862,7 @@ function KdsPro() {
     scheduled: scheduled.length,
     completed: compltedCount,
   };
-
+  //console.log(counts);
   const currentSortableItems = useMemo(
     () => filtered.map((order) => order.id),
     [filtered]
@@ -930,7 +899,7 @@ function KdsPro() {
         selectedDepts={selectedDepts}
         toggleDept={toggleDept}
         setSettingsDialog={setSettingsDialogOpen}
-        departmentMap={departmentMap}
+        departmentMap={departmentMap} // ✅ add this
       />
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -947,7 +916,7 @@ function KdsPro() {
             totalsByDept={totalsByDept}
             t={t}
             onItemClick={handleSidebarItemClick}
-            selectedDepts={selectedDepts}
+            selectedDepts={selectedDepts} // ✅ added
           />
         )}
 
