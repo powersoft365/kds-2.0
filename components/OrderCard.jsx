@@ -1,4 +1,5 @@
 "use client";
+
 import React from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,23 +30,23 @@ import {
 } from "lucide-react";
 import { getItemNote, getItemsNotesMap } from "@/lib/api";
 import { showActionToast } from "@/components/Toast";
+
 /**
- * Safely parse "YYYY-MM-DD HH:mm:ss" or ISO or timestamp to Date.
+ * Parse date string to Date object safely
  */
 function parseDate(input) {
   if (!input) return null;
   if (typeof input === "number") return new Date(input);
   if (typeof input !== "string") return null;
-  // Handle "2025-10-21 07:53:15" → convert to ISO-like
   const isoLike = input.trim().replace(" ", "T");
   const date = new Date(isoLike);
   if (!isNaN(date.getTime())) return date;
-  // Fallback: try raw
   const fallback = new Date(input);
   return isNaN(fallback.getTime()) ? null : fallback;
 }
+
 /**
- * Format createdAt to "HH:mm" in local time, safely.
+ * Format order creation time to readable time format
  */
 function formatOrderTime(createdAt, locale = "en-US") {
   const date = parseDate(createdAt);
@@ -58,6 +59,10 @@ function formatOrderTime(createdAt, locale = "en-US") {
     })
     .replace(/\s/g, "");
 }
+
+/**
+ * Main OrderCard component that displays individual order information
+ */
 export function OrderCard({
   order,
   toggleItemState,
@@ -75,12 +80,20 @@ export function OrderCard({
   isDragging = false,
   dragHandleProps = {},
 }) {
-  // console.log("ordercard", order);
+  // Calculate the current substatus of the order
   const sub = calcSubStatus(order);
+
+  // Get the label and CSS class for the primary action button
   const { label: actionText = "Action", cls: actionClass = "" } =
     actionLabelAndClass(order) || {};
+
+  // Check if order is marked as completed in the UI
   const isCompleted = order.status === "completed";
+
+  // Check if order is currently being cooked
   const isCooking = !!order.cooking && !isCompleted;
+
+  // Check if all items in the order are checked (ready to complete)
   const readyToComplete = React.useMemo(
     () =>
       Array.isArray(order.items) &&
@@ -88,8 +101,18 @@ export function OrderCard({
       order.items.every((i) => i.itemStatus === "checked"),
     [order.items]
   );
+
+  // FIX: Check if order has system status of APPROVED or REJECTED to show Undo button
+  const hasApprovedOrRejectedSystemStatus =
+    order.systemStatus === "APPROVED" || order.systemStatus === "REJECTED";
+
+  // Ref to access the root DOM element of this component
   const rootRef = React.useRef(null);
+
+  // State to track if this card is rendered inside a dialog/modal
   const [insideDialog, setInsideDialog] = React.useState(false);
+
+  // Effect to detect if this component is inside a dialog
   React.useEffect(() => {
     try {
       const el = rootRef.current;
@@ -99,14 +122,19 @@ export function OrderCard({
       setInsideDialog(false);
     }
   }, []);
-  /* ---------- Slide-to-Undo ---------- */
+
+  /* ---------- Slide-to-Undo Functionality ---------- */
+
   const [undoOpen, setUndoOpen] = React.useState(false);
   const [undoVal, setUndoVal] = React.useState([0]);
+
   const openUndo = () => {
     setUndoVal([0]);
     setUndoOpen(true);
   };
+
   const closeUndo = () => setUndoOpen(false);
+
   const commitUndo = (v) => {
     const n = Array.isArray(v) ? v[0] : v;
     if (n >= 100) {
@@ -119,14 +147,19 @@ export function OrderCard({
       setTimeout(() => closeUndo(), 150);
     }
   };
-  /* ---------- Slide-to-Revert ---------- */
+
+  /* ---------- Slide-to-Revert Functionality ---------- */
+
   const [revertOpen, setRevertOpen] = React.useState(false);
   const [revertVal, setRevertVal] = React.useState([0]);
+
   const openRevert = () => {
     setRevertVal([0]);
     setRevertOpen(true);
   };
+
   const closeRevert = () => setRevertOpen(false);
+
   const commitRevert = (v) => {
     const n = Array.isArray(v) ? v[0] : v;
     if (n >= 100) {
@@ -139,12 +172,15 @@ export function OrderCard({
       setTimeout(() => closeRevert(), 150);
     }
   };
-  /* ---------- Items grouped by department ---------- */
+
+  /* ---------- Items Grouped by Department ---------- */
+
   const itemsByDept = (order.items || []).reduce((acc, it) => {
     const d = it.dept || "General";
     (acc[d] ||= []).push(it);
     return acc;
   }, {});
+
   const itemsByDeptSorted = React.useMemo(() => {
     const out = {};
     Object.entries(itemsByDept).forEach(([dept, items]) => {
@@ -157,13 +193,16 @@ export function OrderCard({
     });
     return out;
   }, [itemsByDept]);
+
   const filteredItemsByDept = React.useMemo(() => {
     if (!Array.isArray(selectedDepts) || selectedDepts.includes("All"))
       return itemsByDeptSorted;
+
     const filtered = {};
     for (const [dept, items] of Object.entries(itemsByDeptSorted)) {
       if (selectedDepts.includes(dept)) filtered[dept] = items;
     }
+
     if (
       Object.keys(filtered).length === 0 &&
       Object.keys(itemsByDeptSorted).length
@@ -171,18 +210,34 @@ export function OrderCard({
       const firstDept = Object.keys(itemsByDeptSorted)[0];
       filtered[firstDept] = [];
     }
+
     return filtered;
   }, [itemsByDeptSorted, selectedDepts]);
+
+  /**
+   * Get CSS classes for status badge based on status value
+   * FIX: Show REJECTED with red badge and APPROVED with green badge
+   */
   const subStatusBadge = (val) => {
     if (!val) return "";
     const base = "px-2.5 py-1 rounded-full text-xs font-bold";
+
+    // FIX: Handle REJECTED and APPROVED system statuses
+    if (order.systemStatus === "REJECTED")
+      return `${base} bg-red-600 text-white`;
+    if (order.systemStatus === "APPROVED")
+      return `${base} bg-emerald-600 text-white`;
+
+    // Handle UI statuses
     if (val === "delayed") return `${base} bg-red-600 text-white`;
     if (val === "on-hold") return `${base} bg-violet-600 text-white`;
     if (val === "cooking") return `${base} bg-amber-600 text-white`;
     if (val === "completed") return `${base} bg-emerald-600 text-white`;
     return `${base} bg-slate-600 text-white`;
   };
-  /* ---------- Countdown Timer ---------- */
+
+  /* ---------- Countdown Timer Functionality ---------- */
+
   const [startedAtMs, setStartedAtMs] = React.useState(() => {
     if (order.cookingStartedAt)
       return typeof order.cookingStartedAt === "number"
@@ -190,23 +245,29 @@ export function OrderCard({
         : Date.parse(order.cookingStartedAt);
     return null;
   });
+
   React.useEffect(() => {
     if (isCooking && !startedAtMs) {
       setStartedAtMs(Date.now());
     }
   }, [isCooking, startedAtMs]);
+
   const etaMin = Math.max(0, Number(order.eta || 0));
   const totalMs = Math.max(1, etaMin * 60_000);
+
   const [now, setNow] = React.useState(() => Date.now());
+
   React.useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
   const remainingMs = (() => {
     if (!startedAtMs || !isCooking) return totalMs;
     const due = startedAtMs + totalMs;
     return due - now;
   })();
+
   const fmt = (ms) => {
     const neg = ms < 0;
     const s = Math.abs(Math.ceil(ms / 1000));
@@ -219,7 +280,9 @@ export function OrderCard({
         : `${mm}:${String(ss).padStart(2, "0")}`;
     return neg ? `-${body}` : body;
   };
+
   const pctLeft = Math.max(0, Math.min(1, remainingMs / totalMs));
+
   const countdownTone =
     remainingMs < 0
       ? "text-red-600"
@@ -228,17 +291,20 @@ export function OrderCard({
       : pctLeft >= 0.2
       ? "text-amber-600"
       : "text-red-600";
+
   const overdue =
     remainingMs < 0 ? (
       <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-600 text-white animate-pulse">
         OVERDUE
       </span>
     ) : null;
+
   const handlePrimaryClick = () => {
     if (isCooking && !readyToComplete) {
       openRevert();
       return;
     }
+
     if (readyToComplete) {
       showActionToast({
         action: "order.complete",
@@ -251,13 +317,24 @@ export function OrderCard({
         message: `Order #${order.id} started cooking`,
       });
     }
+    console.log("order happen", order);
     onPrimaryAction && onPrimaryAction(order);
   };
-  const borderCls =
-    sub === "delayed" || remainingMs < 0
-      ? "border-red-600"
-      : statusBorder(order);
-  /* ---------- Item click ---------- */
+
+  /**
+   * FIX: Determine border color based on system status
+   * REJECTED = red border, APPROVED = green border
+   */
+  const borderCls = (() => {
+    // First check system status for history tab orders
+    if (order.systemStatus === "REJECTED") return "border-red-600";
+    if (order.systemStatus === "APPROVED") return "border-emerald-600";
+
+    // Then check UI status for active tab orders
+    if (sub === "delayed" || remainingMs < 0) return "border-red-600";
+    return statusBorder(order);
+  })();
+
   const handleItemClick = (e, orderId, itemId) => {
     if (e.defaultPrevented || e.button !== 0) return;
     if (isCompleted) return;
@@ -265,27 +342,35 @@ export function OrderCard({
     if (target?.closest?.('[data-stop-item-click="true"]')) return;
     toggleItemState(orderId, itemId);
   };
-  /* ---------- Notes modal ---------- */
+
+  /* ---------- Item Notes Functionality ---------- */
+
   const [notesOpen, setNotesOpen] = React.useState(false);
   const [notesLoading, setNotesLoading] = React.useState(false);
   const [notesError, setNotesError] = React.useState("");
   const [notesText, setNotesText] = React.useState("");
   const [notesItemName, setNotesItemName] = React.useState("");
+
   const notesCacheRef = React.useRef(new Map());
   const [notesAvailable, setNotesAvailable] = React.useState(() => new Set());
+
   React.useEffect(() => {
     let alive = true;
+
     (async () => {
       try {
         const codes = (order.items || [])
           .map((it) => it.itemCode365)
           .filter(Boolean);
+
         if (codes.length === 0) {
           if (alive) setNotesAvailable(new Set());
           return;
         }
+
         const map = await getItemsNotesMap(codes);
         if (!alive) return;
+
         const nextSet = new Set();
         for (const [code, note] of map.entries()) {
           const text = String(note || "").trim();
@@ -299,29 +384,35 @@ export function OrderCard({
         setNotesAvailable(new Set());
       }
     })();
+
     return () => {
       alive = false;
     };
   }, [order.items]);
+
   const openNotesForItem = async (item) => {
     setNotesItemName(item.name || "");
     const code = item.itemCode365 || "";
     setNotesText("");
     setNotesError("");
     setNotesOpen(true);
+
     if (!code) {
       setNotesError("No item code available for this line.");
       return;
     }
+
     if (!notesAvailable.has(code)) {
       setNotesText("");
       return;
     }
+
     const cached = notesCacheRef.current.get(code);
     if (typeof cached === "string") {
       setNotesText(cached);
       return;
     }
+
     try {
       setNotesLoading(true);
       const note = await getItemNote(code);
@@ -334,8 +425,21 @@ export function OrderCard({
       setNotesLoading(false);
     }
   };
+
   /* ---------- Render ---------- */
+
   const orderTime = formatOrderTime(order.createdAt);
+
+  /**
+   * FIX: Get display text for status badge
+   * Show REJECTED/APPROVED for system status, otherwise use UI status
+   */
+  const getStatusDisplayText = () => {
+    if (order.systemStatus === "REJECTED") return "REJECTED";
+    if (order.systemStatus === "APPROVED") return "APPROVED";
+    return sub ? sub.toUpperCase() : "";
+  };
+
   return (
     <>
       <div
@@ -372,10 +476,14 @@ export function OrderCard({
                 )}
               </div>
             </div>
-            {sub ? (
-              <span className={subStatusBadge(sub)}>{sub.toUpperCase()}</span>
+            {/* FIX: Show status badge with proper system status text */}
+            {getStatusDisplayText() ? (
+              <span className={subStatusBadge(sub)}>
+                {getStatusDisplayText()}
+              </span>
             ) : null}
           </CardHeader>
+
           <CardContent className="pt-4 pb-2 flex-1">
             <div className="relative h-[300px] overflow-y-auto pr-1">
               {Object.entries(filteredItemsByDept || {}).map(
@@ -397,6 +505,7 @@ export function OrderCard({
                           const hasNotes =
                             !!it.itemCode365 &&
                             notesAvailable.has(it.itemCode365);
+
                           return (
                             <li
                               key={`${order.id}-${dept}-${it.id || index}`}
@@ -500,6 +609,7 @@ export function OrderCard({
               )}
             </div>
           </CardContent>
+
           <CardFooter className="p-0">
             <div className="bg-muted/50 w-full p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -523,6 +633,7 @@ export function OrderCard({
                   <span className={`${countdownTone}`}>{fmt(remainingMs)}</span>
                   {overdue}
                 </button>
+
                 {insideDialog ? (
                   !isCompleted ? (
                     <div className="flex justify-center md:justify-end">
@@ -539,7 +650,8 @@ export function OrderCard({
                   ) : null
                 ) : (
                   <div className="grid grid-cols-2 gap-3 md:flex md:gap-3 md:justify-end">
-                    {isCompleted ? (
+                    {/* FIX: Show Undo button for completed orders OR orders with APPROVED/REJECTED system status */}
+                    {isCompleted || hasApprovedOrRejectedSystemStatus ? (
                       <Button
                         className="w-full md:w-auto justify-center font-bold bg-slate-700 hover:bg-slate-800"
                         onClick={(e) => {
@@ -585,7 +697,7 @@ export function OrderCard({
           </CardFooter>
         </Card>
       </div>
-      {/* Undo Slide Dialog */}
+
       <Dialog
         open={undoOpen}
         onOpenChange={(o) => (o ? openUndo() : closeUndo())}
@@ -608,7 +720,7 @@ export function OrderCard({
           />
         </DialogContent>
       </Dialog>
-      {/* Revert Slide Dialog */}
+
       <Dialog
         open={revertOpen}
         onOpenChange={(o) => (o ? openRevert() : closeRevert())}
@@ -629,7 +741,7 @@ export function OrderCard({
           />
         </DialogContent>
       </Dialog>
-      {/* Notes Modal */}
+
       <Dialog open={notesOpen} onOpenChange={setNotesOpen}>
         <DialogContent className="p-0 overflow-hidden">
           <DialogHeader className="px-4 pt-4">
@@ -662,11 +774,16 @@ export function OrderCard({
     </>
   );
 }
-/** Slide-to-Confirm reusable rail */
+
+/**
+ * Reusable Slide-to-Confirm component for undo/revert actions
+ */
 function SlideToConfirm({ value, setValue, onCommit, label, icon }) {
   const railRef = React.useRef(null);
   const [dragging, setDragging] = React.useState(false);
+
   const clamp = (n) => Math.max(0, Math.min(100, n));
+
   const updateFromClientX = (clientX) => {
     const el = railRef.current;
     if (!el) return;
@@ -674,23 +791,28 @@ function SlideToConfirm({ value, setValue, onCommit, label, icon }) {
     const pct = ((clientX - rect.left) / rect.width) * 100;
     setValue(clamp(pct));
   };
+
   const onPointerDown = (e) => {
     setDragging(true);
     e.currentTarget.setPointerCapture?.(e.pointerId);
     updateFromClientX(e.clientX);
   };
+
   const onPointerMove = (e) => dragging && updateFromClientX(e.clientX);
+
   const onPointerUp = (e) => {
     if (!dragging) return;
     setDragging(false);
     e.currentTarget.releasePointerCapture?.(e.pointerId);
     onCommit?.();
   };
+
   const onSliderChange = (v) => setValue(Array.isArray(v) ? v[0] : v);
   const onSliderCommit = (v) => {
     const n = Array.isArray(v) ? v[0] : v;
     if (n >= 100) onCommit?.();
   };
+
   return (
     <div className="p-4 sm:p-6 pt-4">
       <div className="text-center font-bold text-base sm:text-lg mb-3 select-none">
