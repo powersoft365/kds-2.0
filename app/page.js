@@ -180,8 +180,14 @@ function normalizeOrders(list, page, pageSize) {
         ["APPROVED", "DONE", "COMPLETED"].includes(l.rawStatus)
       );
 
+    const allRejected =
+      items.length > 0 &&
+      items.every((l) => ["REJECTED", "CANCELLED"].includes(l.rawStatus));
+
     const status = allApproved
       ? "completed"
+      : allRejected
+      ? "rejected"
       : (raw.status_code_365 || header.status_code_365 || "")
           .toString()
           .toUpperCase() || "pending";
@@ -241,6 +247,7 @@ function buildTotalsByDept(orders) {
  */
 const statusBorder = (o) => {
   if (o?.status === "completed") return "border-emerald-500";
+  if (o?.status === "rejected") return "border-red-500";
   if (o?.onHold) return "border-violet-500";
   if (o?.cooking) return "border-amber-500";
   return "border-slate-500";
@@ -433,6 +440,7 @@ function KdsPro() {
         setCompleted(normalized);
       }
 
+      // ------------------------------- REMOVE (have api call for depts)
       const deptSet = new Set(["All"]);
       normalized.forEach((o) =>
         (o.items || []).forEach((it) => deptSet.add(it.dept || "General"))
@@ -442,6 +450,16 @@ function KdsPro() {
         const all = new Set([...prev, ...Array.from(deptSet)]);
         return Array.from(all);
       });
+
+      // ------------------------------- LIST ITEMS HERE ----------------------------------------------------
+      const map = await getItemsNotesMap(codes);
+      normalized.forEach((o) =>
+        o.items.forEach(
+          (it) => (it.notes = map.get(it.itemCode365 || it.id) || "")
+        )
+      );
+
+      // ------------------------------- LIST ITEMS HERE ----------------------------------------------------
 
       const total =
         activeTab === "active" ? activeOrdersCount : completedOrdersCount;
@@ -610,11 +628,19 @@ function KdsPro() {
             )
           );
 
+        const allRejected =
+          items.length > 0 &&
+          items.every((l) =>
+            ["REJECTED", "CANCELLED"].includes(
+              up(l.status_code_365 || l.status_code)
+            )
+          );
+
         const noneInproc = items.every(
           (l) => up(l.status_code_365 || l.status_code) !== "INPROC"
         );
 
-        return { anyInproc, allApproved, noneInproc };
+        return { anyInproc, allApproved, allRejected, noneInproc };
       } catch (err) {
         return null;
       }
@@ -655,8 +681,7 @@ function KdsPro() {
       const nextStatus = isComplete ? "APPROVED" : "INPROC";
 
       const rows = buildRowsPerLine(order, nextStatus);
-      //rows
-      // console.log("mr rows", rows);
+
       const rollback = JSON.parse(JSON.stringify(orders));
 
       const updatedOrders = orders.map((o) =>
@@ -695,6 +720,35 @@ function KdsPro() {
         if (isComplete) {
           toast.success(`Order #${order.id} completed`);
           await publish("completeOrder", order);
+
+          // Update counts after completion
+          const deptFilter = selectedDepts.includes("All")
+            ? ""
+            : selectedDepts.join(",");
+
+          const activeCountPayload = await listBatchOrders({
+            pageNumber: "1",
+            pageSize: "24",
+            onlyCounted: "Y",
+            itemDepartmentSelection: deptFilter,
+            invoiceSystemStatus: "NEW,INPROC",
+            signal: abortRef.current.signal,
+          });
+
+          const completedCountPayload = await listBatchOrders({
+            pageNumber: "1",
+            pageSize: "24",
+            onlyCounted: "Y",
+            itemDepartmentSelection: deptFilter,
+            invoiceSystemStatus: "APPROVED,REJECTED",
+            signal: abortRef.current.signal,
+          });
+
+          const activeOrdersCount = readTotalCount(activeCountPayload);
+          const completedOrdersCount = readTotalCount(completedCountPayload);
+
+          setActiveCount(activeOrdersCount);
+          setCompletedCount(completedOrdersCount);
         } else {
           toast.success(`Order #${order.id} ${t("started_cooking")}`);
           await publish("startCooking", {
@@ -714,10 +768,93 @@ function KdsPro() {
     [orders, buildRowsPerLine, verifyPersisted, t, selectedDepts]
   );
 
+  const onRejectAction = useCallback(
+    async (order) => {
+      // console.log(
+      //   `REJECTING Order #${order.id} - Sending REJECTED status to backend`
+      // );
+
+      const rows = buildRowsPerLine(order, "REJECTED");
+      // console.log("Reject rows to send:", rows);
+
+      const rollbackOrders = JSON.parse(JSON.stringify(orders));
+
+      // FIX: Update the order status to rejected and move to completed
+      setOrders((prev) => prev.filter((o) => o.id !== order.id));
+      setCompleted((prev) => [
+        {
+          ...order,
+          status: "rejected",
+          cooking: false,
+          systemStatus: "REJECTED",
+          // FIX: Ensure all items have cancelled status for consistency
+          items: order.items.map((item) => ({
+            ...item,
+            itemStatus: "cancelled",
+          })),
+        },
+        ...prev,
+      ]);
+
+      try {
+        // FIX: Send REJECTED status to backend instead of cooking status
+        await bulkChangeBatchOrderStatus(rows);
+        console.log(
+          `Order #${order.id} successfully rejected with REJECTED status`
+        );
+
+        const persisted = await verifyPersisted(order);
+        if (!persisted || !persisted.allRejected) {
+          // console.log(`Order #${order.id} rejection verification failed`);
+        } else {
+          // console.log(`Order #${order.id} rejection verified successfully`);
+        }
+
+        toast.success(`Order #${order.id} rejected`);
+        // FIX: Publish reject event instead of cooking event
+        await publish("rejectOrder", order);
+
+        // Update counts after rejection
+        const deptFilter = selectedDepts.includes("All")
+          ? ""
+          : selectedDepts.join(",");
+
+        const activeCountPayload = await listBatchOrders({
+          pageNumber: "1",
+          pageSize: "24",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "NEW,INPROC",
+          signal: abortRef.current.signal,
+        });
+
+        const completedCountPayload = await listBatchOrders({
+          pageNumber: "1",
+          pageSize: "24",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "APPROVED,REJECTED",
+          signal: abortRef.current.signal,
+        });
+
+        const activeOrdersCount = readTotalCount(activeCountPayload);
+        const completedOrdersCount = readTotalCount(completedCountPayload);
+
+        setActiveCount(activeOrdersCount);
+        setCompletedCount(completedOrdersCount);
+      } catch (e) {
+        console.error(`Reject failed for Order #${order.id}:`, e);
+        setOrders(rollbackOrders);
+        setCompleted((prev) => prev.filter((o) => o.id !== order.id));
+        toast.error("Reject failed");
+      }
+    },
+    [orders, buildRowsPerLine, verifyPersisted, selectedDepts]
+  );
+
   const onUndoAction = useCallback(
     async (order) => {
       const rows = buildRowsPerLine(order, "NEW");
-      console.log("ROWS", rows);
       const rollbackCompleted = JSON.parse(JSON.stringify(completed));
       const rollbackOrders = JSON.parse(JSON.stringify(orders));
 
@@ -726,8 +863,14 @@ function KdsPro() {
         {
           ...order,
           status: "active",
-          cooking: true,
-          cookingStartedAt: Date.now(),
+          cooking: false, // FIX: Don't set cooking to true when undoing rejected order
+          cookingStartedAt: null,
+          systemStatus: "NEW",
+          // FIX: Reset items to none status when undoing
+          items: order.items.map((item) => ({
+            ...item,
+            itemStatus: "none",
+          })),
         },
         ...prev,
       ]);
@@ -736,14 +879,41 @@ function KdsPro() {
         await bulkChangeBatchOrderStatus(rows);
 
         const persisted = await verifyPersisted(order);
-        if (!persisted || !persisted.anyInproc) {
+        if (!persisted || !persisted.noneInproc) {
         }
 
         toast.success(`Order #${order.id}: ${t("undone_to_active")}`);
-        await publish("startCooking", {
-          ...order,
-          cookingStartedAt: Date.now(),
+        // FIX: Don't publish startCooking when undoing rejected order
+        await publish("undoReject", order);
+
+        // Update counts after undo
+        const deptFilter = selectedDepts.includes("All")
+          ? ""
+          : selectedDepts.join(",");
+
+        const activeCountPayload = await listBatchOrders({
+          pageNumber: "1",
+          pageSize: "24",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "NEW,INPROC",
+          signal: abortRef.current.signal,
         });
+
+        const completedCountPayload = await listBatchOrders({
+          pageNumber: "1",
+          pageSize: "24",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "APPROVED,REJECTED",
+          signal: abortRef.current.signal,
+        });
+
+        const activeOrdersCount = readTotalCount(activeCountPayload);
+        const completedOrdersCount = readTotalCount(completedCountPayload);
+
+        setActiveCount(activeOrdersCount);
+        setCompletedCount(completedOrdersCount);
       } catch (e) {
         setCompleted(rollbackCompleted);
         setOrders(rollbackOrders);
@@ -780,6 +950,35 @@ function KdsPro() {
 
         toast.success(`Order #${order.id} reverted to not started`);
         await publish("revertOrder", order);
+
+        // Update counts after revert
+        const deptFilter = selectedDepts.includes("All")
+          ? ""
+          : selectedDepts.join(",");
+
+        const activeCountPayload = await listBatchOrders({
+          pageNumber: "1",
+          pageSize: "24",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "NEW,INPROC",
+          signal: abortRef.current.signal,
+        });
+
+        const completedCountPayload = await listBatchOrders({
+          pageNumber: "1",
+          pageSize: "24",
+          onlyCounted: "Y",
+          itemDepartmentSelection: deptFilter,
+          invoiceSystemStatus: "APPROVED,REJECTED",
+          signal: abortRef.current.signal,
+        });
+
+        const activeOrdersCount = readTotalCount(activeCountPayload);
+        const completedOrdersCount = readTotalCount(completedCountPayload);
+
+        setActiveCount(activeOrdersCount);
+        setCompletedCount(completedOrdersCount);
       } catch (e) {
         setOrders(rollbackOrders);
         toast.error("Revert failed");
@@ -858,7 +1057,21 @@ function KdsPro() {
   /* ---------- UI Helper Functions ---------- */
   const actionLabelAndClass = useCallback(
     (o) => {
-      if ((o.items || []).every((i) => i.itemStatus === "checked")) {
+      const allChecked = (o.items || []).every(
+        (i) => i.itemStatus === "checked"
+      );
+      const allCancelled = (o.items || []).every(
+        (i) => i.itemStatus === "cancelled"
+      );
+
+      if (allCancelled) {
+        return {
+          label: "Rejected",
+          cls: "bg-red-600 hover:bg-red-700",
+        };
+      }
+
+      if (allChecked) {
         return {
           label: t("complete"),
           cls: "bg-emerald-600 hover:bg-emerald-700",
@@ -880,6 +1093,9 @@ function KdsPro() {
   const calcSubStatus = (o) => {
     if (o.status === "completed") {
       return "completed";
+    }
+    if (o.status === "rejected") {
+      return "rejected";
     }
     if (o.cooking) {
       return "cooking";
@@ -1050,6 +1266,7 @@ function KdsPro() {
                       onPrimaryAction={onPrimaryAction}
                       onUndoAction={onUndoAction}
                       onRevertAction={onRevertAction}
+                      onRejectAction={onRejectAction}
                       setEtaDialog={setEtaDialog}
                       setOrderDialog={setOrderDialog}
                       onApplyItemModifiers={() => {}}
@@ -1075,6 +1292,7 @@ function KdsPro() {
                       onPrimaryAction={onPrimaryAction}
                       onUndoAction={onUndoAction}
                       onRevertAction={onRevertAction}
+                      onRejectAction={onRejectAction}
                       setEtaDialog={setEtaDialog}
                       setOrderDialog={setOrderDialog}
                       onApplyItemModifiers={() => {}}
@@ -1127,6 +1345,7 @@ function KdsPro() {
         onPrimaryAction={onPrimaryAction}
         onUndoAction={onUndoAction}
         onRevertAction={onRevertAction}
+        onRejectAction={onRejectAction}
         setEtaDialog={setEtaDialog}
         t={t}
         timeElapsedMin={(ord) => minutesSince(ord.createdAt)}

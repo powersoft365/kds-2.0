@@ -27,6 +27,7 @@ import {
   MinusCircle,
   Loader2,
   Info,
+  Ban,
 } from "lucide-react";
 import { getItemNote, getItemsNotesMap } from "@/lib/api";
 import { showActionToast } from "@/components/Toast";
@@ -69,6 +70,7 @@ export function OrderCard({
   onPrimaryAction,
   onUndoAction,
   onRevertAction,
+  onRejectAction,
   setEtaDialog,
   setOrderDialog,
   t = (s) => s,
@@ -99,6 +101,15 @@ export function OrderCard({
       Array.isArray(order.items) &&
       order.items.length > 0 &&
       order.items.every((i) => i.itemStatus === "checked"),
+    [order.items]
+  );
+
+  // Check if all items in the order are cancelled (ready to reject)
+  const readyToReject = React.useMemo(
+    () =>
+      Array.isArray(order.items) &&
+      order.items.length > 0 &&
+      order.items.every((i) => i.itemStatus === "cancelled"),
     [order.items]
   );
 
@@ -148,6 +159,7 @@ export function OrderCard({
     }
   };
 
+  // simple slide to 100% to revert cooking state to Not Started
   /* ---------- Slide-to-Revert Functionality ---------- */
 
   const [revertOpen, setRevertOpen] = React.useState(false);
@@ -317,8 +329,21 @@ export function OrderCard({
         message: `Order #${order.id} started cooking`,
       });
     }
-    console.log("order happen", order);
     onPrimaryAction && onPrimaryAction(order);
+  };
+
+  const handleRejectClick = () => {
+    if (readyToReject) {
+      console.log(
+        `Directly rejecting Order #${order.id} - all items are cancelled`
+      );
+      onRejectAction && onRejectAction(order);
+      showActionToast({
+        action: "order.reject",
+        message: `Order #${order.id} rejected`,
+        major: true,
+      });
+    }
   };
 
   /**
@@ -427,8 +452,10 @@ export function OrderCard({
   };
 
   /* ---------- Render ---------- */
-
-  const orderTime = formatOrderTime(order.createdAt);
+  // header time
+  const orderTime = formatOrderTime(
+    order?._raw.invoice_header?.batch_invoice_date_utc0
+  );
 
   /**
    * FIX: Get display text for status badge
@@ -498,6 +525,7 @@ export function OrderCard({
                           No items for this department
                         </li>
                       ) : (
+                        //here is  updateable status
                         (Array.isArray(items) ? items : []).map((it, index) => {
                           const isChecked = it.itemStatus === "checked";
                           const isCancelled = it.itemStatus === "cancelled";
@@ -505,6 +533,49 @@ export function OrderCard({
                           const hasNotes =
                             !!it.itemCode365 &&
                             notesAvailable.has(it.itemCode365);
+
+                          // Create a comma-separated string of modifiers
+                          const modifiersList = mods
+                            .map((m) => {
+                              if (typeof m === "object" && m.modifier_name) {
+                                return m.modifier_name;
+                              }
+                              return String(m);
+                            })
+                            .join(", ");
+
+                          // Determine background color based on modifier type
+                          let bgColor = "bg-gray-100";
+                          let icon = null;
+
+                          // Check if any modifier is a "no" modifier (cancelled)
+                          const hasNoModifier = mods.some(
+                            (m) =>
+                              typeof m === "object" &&
+                              m.modifier_prefix &&
+                              m.modifier_prefix.toLowerCase() === "no"
+                          );
+
+                          // Check if any modifier is a "plus" modifier
+                          const hasPlusModifier = mods.some(
+                            (m) =>
+                              typeof m === "object" &&
+                              m.modifier_prefix &&
+                              m.modifier_prefix.toLowerCase() === "plus"
+                          );
+
+                          // Set background color based on modifier types
+                          if (hasNoModifier) {
+                            bgColor = "bg-red-50";
+                            icon = (
+                              <MinusCircle className="w-6 h-6 inline mr-1 text-red-600" />
+                            );
+                          } else if (hasPlusModifier) {
+                            bgColor = "bg-green-50";
+                            icon = (
+                              <PlusSquare className="w-6 h-6 inline mr-1 text-green-600" />
+                            );
+                          }
 
                           return (
                             <li
@@ -545,39 +616,13 @@ export function OrderCard({
                                 >
                                   {mods.length > 0 && (
                                     <div className="flex flex-col gap-1">
-                                      {mods.map((m, modIndex) => {
-                                        let icon = null;
-                                        let bgColor = "bg-gray-100";
-                                        if (
-                                          typeof m === "object" &&
-                                          m.modifier_prefix
-                                        ) {
-                                          const prefix =
-                                            m.modifier_prefix.toLowerCase();
-                                          if (prefix === "plus") {
-                                            icon = (
-                                              <PlusSquare className="w-4 h-4 inline mr-1 text-green-600" />
-                                            );
-                                            bgColor = "bg-green-50";
-                                          } else if (prefix === "no") {
-                                            icon = (
-                                              <MinusCircle className="w-4 h-4 inline mr-1 text-red-600" />
-                                            );
-                                            bgColor = "bg-red-50";
-                                          }
-                                        }
-                                        const displayText =
-                                          m.modifier_name || String(m);
-                                        return (
-                                          <span
-                                            key={`mod-${modIndex}`}
-                                            className={`inline-flex items-center p-1 font-semibold rounded-md ${bgColor} text-md`}
-                                          >
-                                            {icon}
-                                            {displayText}
-                                          </span>
-                                        );
-                                      })}
+                                      {/* Display modifiers as comma-separated list with background color */}
+                                      <span
+                                        className={`inline-flex items-center p-1 font-semibold rounded-md ${bgColor} text-md`}
+                                      >
+                                        {icon}
+                                        {modifiersList}
+                                      </span>
                                     </div>
                                   )}
                                 </div>
@@ -637,15 +682,31 @@ export function OrderCard({
                 {insideDialog ? (
                   !isCompleted ? (
                     <div className="flex justify-center md:justify-end">
-                      <Button
-                        className={`w-full sm:max-w-xs md:w-auto justify-center font-bold ${actionClass}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handlePrimaryClick();
-                        }}
-                      >
-                        {actionText}
-                      </Button>
+                      {readyToReject ? (
+                        <Button
+                          className="w-full sm:max-w-xs md:w-auto justify-center font-bold bg-red-600 hover:bg-red-700"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            console.log(
+                              `Rejected button clicked for Order #${order.id} - all items are cancelled`
+                            );
+                            handleRejectClick(); // FIX: Direct reject without slide confirmation
+                          }}
+                        >
+                          <Ban className="w-4 h-4 mr-2" />
+                          Rejected
+                        </Button>
+                      ) : (
+                        <Button
+                          className={`w-full sm:max-w-xs md:w-auto justify-center font-bold ${actionClass}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePrimaryClick();
+                          }}
+                        >
+                          {actionText}
+                        </Button>
+                      )}
                     </div>
                   ) : null
                 ) : (
@@ -662,6 +723,20 @@ export function OrderCard({
                       >
                         <Undo2 className="w-4 h-4 mr-2" />
                         {t("Undo")}
+                      </Button>
+                    ) : readyToReject ? (
+                      <Button
+                        className="w-full md:w-auto justify-center font-bold bg-red-600 hover:bg-red-700"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          console.log(
+                            `Rejected button clicked for Order #${order.id} - all items are cancelled`
+                          );
+                          handleRejectClick(); // FIX: Direct reject without slide confirmation
+                        }}
+                      >
+                        <Ban className="w-4 h-4 mr-2" />
+                        Rejected
                       </Button>
                     ) : (
                       <Button
@@ -778,7 +853,14 @@ export function OrderCard({
 /**
  * Reusable Slide-to-Confirm component for undo/revert actions
  */
-function SlideToConfirm({ value, setValue, onCommit, label, icon }) {
+function SlideToConfirm({
+  value,
+  setValue,
+  onCommit,
+  label,
+  icon,
+  confirmColor = "bg-emerald-500/25",
+}) {
   const railRef = React.useRef(null);
   const [dragging, setDragging] = React.useState(false);
 
@@ -826,7 +908,7 @@ function SlideToConfirm({ value, setValue, onCommit, label, icon }) {
         onPointerUp={onPointerUp}
       >
         <div
-          className="absolute inset-y-0 left-0 rounded-2xl bg-emerald-500/25 pointer-events-none"
+          className={`absolute inset-y-0 left-0 rounded-2xl ${confirmColor} pointer-events-none`}
           style={{ width: `${Math.min(value, 100)}%` }}
         />
         <div
