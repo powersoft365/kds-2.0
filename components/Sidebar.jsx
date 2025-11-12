@@ -26,7 +26,7 @@ function useMediaQuery(query) {
  * Sidebar with expandable department sections.
  * ✅ Shows only selected departments (multi-select supported)
  * ✅ Items sorted alphabetically
- * ✅ Department codes never shown — kept internally only
+ * ✅ Department names displayed properly
  */
 export function Sidebar({
   sidebarOpen,
@@ -131,7 +131,7 @@ export function Sidebar({
         <div className="flex items-center justify-between p-4 border-b border-border">
           {(isDesktop ? sidebarOpen : true) && (
             <h2 className="font-extrabold text-lg tracking-wide bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-              {t("totals")}
+              {t ? t("totals") : "TOTALS"}
             </h2>
           )}
           <Button
@@ -162,13 +162,6 @@ export function Sidebar({
                 const expanded =
                   (isDesktop ? sidebarOpen : true) && expandedDepts[dept];
 
-                // ✅ Department code hidden — only log internally if needed
-                const deptCode = departmentMap.get(dept);
-                if (deptCode) {
-                  // This stays silent, no UI display
-                  console.debug(`Dept ${dept} (code ${deptCode})`);
-                }
-
                 return (
                   <div key={dept} className="group">
                     {/* Department header */}
@@ -188,7 +181,7 @@ export function Sidebar({
                       aria-expanded={!!expanded}
                       title={dept}
                     >
-                      {/* ✅ Only show department name */}
+                      {/* ✅ Show proper department name */}
                       <span
                         className={`font-bold truncate ${
                           isDesktop && !sidebarOpen

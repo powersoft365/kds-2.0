@@ -54,7 +54,7 @@ export function Header({
   selectedDepts = [],
   toggleDept = () => {},
   setSettingsDialog = () => {},
-  departmentMap = new Map(), // ✅ Added map for logging code
+  departmentMap = new Map(),
 }) {
   const router = useRouter();
   const [isMobileTrayOpen, setIsMobileTrayOpen] = React.useState(false);
@@ -89,7 +89,6 @@ export function Header({
   const isLocked = activeLoadingDept !== null;
 
   const onToggleMobileTray = () => setIsMobileTrayOpen((v) => !v);
-  const closeMobileTray = () => setIsMobileTrayOpen(false);
 
   // sort departments alphabetically; keep "All" first
   const sortedDepartments = React.useMemo(() => {
@@ -111,7 +110,6 @@ export function Header({
     (typeof p === "object" || typeof p === "function") &&
     typeof p.then === "function";
 
-  // ✅ Modified to log department code when clicked
   const handleToggleDept = (dept) => {
     if (isLocked && activeLoadingDept !== dept) return;
     setActiveLoadingDept(dept);
@@ -155,7 +153,6 @@ export function Header({
               disabled={disabled}
             >
               {isThisLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-              {/* ✅ Only show department name */}
               <span>{d}</span>
             </Button>
           );
@@ -169,7 +166,19 @@ export function Header({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="secondary" size="sm" className="gap-0">
-          <span className="text-[11px] opacity-80">Tag List</span>
+          {selectedDepts?.length === 0 ? (
+            <span className="text-[11px] opacity-80">Tag List</span>
+          ) : (
+            <>
+              {selectedDepts?.map((d, idx) => (
+                <span key={idx} className="text-[11px] opacity-80">
+                  {d}
+                  {idx < selectedDepts.length - 1 ? ", " : ""}
+                </span>
+              ))}
+            </>
+          )}
+
           <Badge variant="secondary" className="ml-1">
             {selectedCount}
           </Badge>
@@ -193,7 +202,6 @@ export function Header({
             >
               <span className="inline-flex items-center gap-2">
                 {isThisLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                {/* ✅ Only show department name here as well */}
                 <span>{d}</span>
               </span>
             </DropdownMenuCheckboxItem>

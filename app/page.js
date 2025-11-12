@@ -113,7 +113,12 @@ const minutesSince = (ts) => {
 /**
  * Normalize raw order data from API to consistent format
  */
-function normalizeOrders(list, page, pageSize) {
+function normalizeOrders(
+  list,
+  page,
+  pageSize,
+  departmentCodeToNameMap = new Map()
+) {
   return list.map((raw, idx) => {
     const header = raw.invoice_header || {};
     const tableObj = raw.table || header.table || {};
@@ -149,13 +154,19 @@ function normalizeOrders(list, page, pageSize) {
         .toString()
         .toUpperCase();
 
+      // Get department code from API
+      const deptCode = it.item_department_code_365 || it.dept || "General";
+
+      // Convert department code to department name using the map
+      const deptName = departmentCodeToNameMap.get(deptCode) || deptCode;
+
       return {
         id: it.line_id_365 || it.item_code_365 || `${id}-line-${i + 1}`,
         lineId365: it.line_id_365 || "",
         itemCode365: it.item_code_365 || it.item_code || "",
         name: it.item_name || it.item_code_365 || it.name || "Item",
-        dept: it.item_department_code_365 || it.dept || "General",
-        deptCode: it.item_department_code_365 || "",
+        dept: deptName, // Use department name for display
+        deptCode: deptCode, // Keep code for backend operations
         qty: Number(it.line_quantity || it.qty || 1),
         mods: Array.isArray(it.list_modifiers)
           ? it.list_modifiers.map((m) => ({
@@ -233,6 +244,7 @@ function buildTotalsByDept(orders) {
 
   for (const o of orders) {
     for (const it of o.items || []) {
+      // Use department name for display
       const dept = it.dept || "General";
       if (!acc[dept]) acc[dept] = {};
       acc[dept][it.name] = (acc[dept][it.name] || 0) + (it.qty || 1);
@@ -267,6 +279,22 @@ const triBoxCls = (state) => {
   return `${base} border-slate-500`;
 };
 
+// Load selected departments from localStorage
+const loadSelectedDeptsFromLocalStorage = () => {
+  try {
+    const saved = localStorage.getItem("selectedDepartments");
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (error) {
+    console.error(
+      "Failed to load selected departments from localStorage:",
+      error
+    );
+  }
+  return ["All"]; // Default to "All" if nothing saved
+};
+
 /* ------------ Main KDS Pro Component ------------ */
 function KdsPro() {
   const [language, setLanguage] = useState("en");
@@ -279,8 +307,13 @@ function KdsPro() {
   const [completedCount, setCompletedCount] = useState(0);
 
   const [departments, setDepartments] = useState(["All"]);
-  const [selectedDepts, setSelectedDepts] = useState(["All"]);
-  const [departmentMap, setDepartmentMap] = useState(new Map());
+  const [selectedDepts, setSelectedDepts] = useState(() =>
+    loadSelectedDeptsFromLocalStorage()
+  );
+  const [departmentMap, setDepartmentMap] = useState(new Map()); // name -> code
+  const [departmentCodeToNameMap, setDepartmentCodeToNameMap] = useState(
+    new Map()
+  ); // code -> name
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [currentTime, setCurrentTime] = useState("");
@@ -332,7 +365,8 @@ function KdsPro() {
           data?.list_item_departments || data?.departments || data?.list || [];
 
         if (Array.isArray(list) && list.length > 0) {
-          const map = new Map();
+          const nameMap = new Map(); // name -> code (for header)
+          const codeToNameMap = new Map(); // code -> name (for orders)
           const names = ["All"];
 
           for (const d of list) {
@@ -344,14 +378,18 @@ function KdsPro() {
             const code =
               d.item_department_code_365 || d.department_code || d.code || "";
 
-            map.set(name, code);
+            nameMap.set(name, code);
+            codeToNameMap.set(code, name);
             names.push(name);
           }
 
-          setDepartmentMap(map);
+          setDepartmentMap(nameMap);
+          setDepartmentCodeToNameMap(codeToNameMap);
           setDepartments(names);
         }
-      } catch (err) {}
+      } catch (err) {
+        console.error("Failed to fetch departments:", err);
+      }
     }
 
     fetchDepartments();
@@ -369,9 +407,14 @@ function KdsPro() {
 
     abortRef.current = new AbortController();
 
-    const deptFilter = selectedDepts.includes("All")
-      ? ""
-      : selectedDepts.join(",");
+    // Convert selected department names to codes for API filter
+    let deptFilter = "";
+    if (!selectedDepts.includes("All")) {
+      const selectedCodes = selectedDepts
+        .map((name) => departmentMap.get(name))
+        .filter((code) => code && code !== "");
+      deptFilter = selectedCodes.join(",");
+    }
 
     setIsLoading(true);
 
@@ -430,7 +473,12 @@ function KdsPro() {
       }
 
       const list = readOrdersList(dataPayload) || [];
-      const normalized = normalizeOrders(list, currentPage, itemsPerPage);
+      const normalized = normalizeOrders(
+        list,
+        currentPage,
+        itemsPerPage,
+        departmentCodeToNameMap
+      );
 
       if (activeTab === "active") {
         setOrders(normalized);
@@ -439,27 +487,6 @@ function KdsPro() {
         setOrders([]);
         setCompleted(normalized);
       }
-
-      // ------------------------------- REMOVE (have api call for depts)
-      const deptSet = new Set(["All"]);
-      normalized.forEach((o) =>
-        (o.items || []).forEach((it) => deptSet.add(it.dept || "General"))
-      );
-
-      setDepartments((prev) => {
-        const all = new Set([...prev, ...Array.from(deptSet)]);
-        return Array.from(all);
-      });
-
-      // ------------------------------- LIST ITEMS HERE ----------------------------------------------------
-      const map = await getItemsNotesMap(codes);
-      normalized.forEach((o) =>
-        o.items.forEach(
-          (it) => (it.notes = map.get(it.itemCode365 || it.id) || "")
-        )
-      );
-
-      // ------------------------------- LIST ITEMS HERE ----------------------------------------------------
 
       const total =
         activeTab === "active" ? activeOrdersCount : completedOrdersCount;
@@ -480,7 +507,14 @@ function KdsPro() {
         setIsLoading(false);
       }
     }
-  }, [currentPage, itemsPerPage, selectedDepts, activeTab]);
+  }, [
+    currentPage,
+    itemsPerPage,
+    selectedDepts,
+    activeTab,
+    departmentCodeToNameMap,
+    departmentMap,
+  ]);
 
   /* ---------- Fetch Orders Effect ---------- */
   useEffect(() => {
@@ -722,9 +756,13 @@ function KdsPro() {
           await publish("completeOrder", order);
 
           // Update counts after completion
-          const deptFilter = selectedDepts.includes("All")
-            ? ""
-            : selectedDepts.join(",");
+          let deptFilter = "";
+          if (!selectedDepts.includes("All")) {
+            const selectedCodes = selectedDepts
+              .map((name) => departmentMap.get(name))
+              .filter((code) => code && code !== "");
+            deptFilter = selectedCodes.join(",");
+          }
 
           const activeCountPayload = await listBatchOrders({
             pageNumber: "1",
@@ -765,21 +803,15 @@ function KdsPro() {
         toast.error("Status update failed");
       }
     },
-    [orders, buildRowsPerLine, verifyPersisted, t, selectedDepts]
+    [orders, buildRowsPerLine, verifyPersisted, t, selectedDepts, departmentMap]
   );
 
   const onRejectAction = useCallback(
     async (order) => {
-      // console.log(
-      //   `REJECTING Order #${order.id} - Sending REJECTED status to backend`
-      // );
-
       const rows = buildRowsPerLine(order, "REJECTED");
-      // console.log("Reject rows to send:", rows);
 
       const rollbackOrders = JSON.parse(JSON.stringify(orders));
 
-      // FIX: Update the order status to rejected and move to completed
       setOrders((prev) => prev.filter((o) => o.id !== order.id));
       setCompleted((prev) => [
         {
@@ -787,7 +819,6 @@ function KdsPro() {
           status: "rejected",
           cooking: false,
           systemStatus: "REJECTED",
-          // FIX: Ensure all items have cancelled status for consistency
           items: order.items.map((item) => ({
             ...item,
             itemStatus: "cancelled",
@@ -797,27 +828,24 @@ function KdsPro() {
       ]);
 
       try {
-        // FIX: Send REJECTED status to backend instead of cooking status
         await bulkChangeBatchOrderStatus(rows);
-        console.log(
-          `Order #${order.id} successfully rejected with REJECTED status`
-        );
 
         const persisted = await verifyPersisted(order);
         if (!persisted || !persisted.allRejected) {
-          // console.log(`Order #${order.id} rejection verification failed`);
         } else {
-          // console.log(`Order #${order.id} rejection verified successfully`);
         }
 
         toast.success(`Order #${order.id} rejected`);
-        // FIX: Publish reject event instead of cooking event
         await publish("rejectOrder", order);
 
         // Update counts after rejection
-        const deptFilter = selectedDepts.includes("All")
-          ? ""
-          : selectedDepts.join(",");
+        let deptFilter = "";
+        if (!selectedDepts.includes("All")) {
+          const selectedCodes = selectedDepts
+            .map((name) => departmentMap.get(name))
+            .filter((code) => code && code !== "");
+          deptFilter = selectedCodes.join(",");
+        }
 
         const activeCountPayload = await listBatchOrders({
           pageNumber: "1",
@@ -849,7 +877,7 @@ function KdsPro() {
         toast.error("Reject failed");
       }
     },
-    [orders, buildRowsPerLine, verifyPersisted, selectedDepts]
+    [orders, buildRowsPerLine, verifyPersisted, selectedDepts, departmentMap]
   );
 
   const onUndoAction = useCallback(
@@ -863,10 +891,9 @@ function KdsPro() {
         {
           ...order,
           status: "active",
-          cooking: false, // FIX: Don't set cooking to true when undoing rejected order
+          cooking: false,
           cookingStartedAt: null,
           systemStatus: "NEW",
-          // FIX: Reset items to none status when undoing
           items: order.items.map((item) => ({
             ...item,
             itemStatus: "none",
@@ -883,13 +910,16 @@ function KdsPro() {
         }
 
         toast.success(`Order #${order.id}: ${t("undone_to_active")}`);
-        // FIX: Don't publish startCooking when undoing rejected order
         await publish("undoReject", order);
 
         // Update counts after undo
-        const deptFilter = selectedDepts.includes("All")
-          ? ""
-          : selectedDepts.join(",");
+        let deptFilter = "";
+        if (!selectedDepts.includes("All")) {
+          const selectedCodes = selectedDepts
+            .map((name) => departmentMap.get(name))
+            .filter((code) => code && code !== "");
+          deptFilter = selectedCodes.join(",");
+        }
 
         const activeCountPayload = await listBatchOrders({
           pageNumber: "1",
@@ -920,7 +950,15 @@ function KdsPro() {
         toast.error("Undo failed");
       }
     },
-    [orders, completed, buildRowsPerLine, verifyPersisted, t, selectedDepts]
+    [
+      orders,
+      completed,
+      buildRowsPerLine,
+      verifyPersisted,
+      t,
+      selectedDepts,
+      departmentMap,
+    ]
   );
 
   const onRevertAction = useCallback(
@@ -952,9 +990,13 @@ function KdsPro() {
         await publish("revertOrder", order);
 
         // Update counts after revert
-        const deptFilter = selectedDepts.includes("All")
-          ? ""
-          : selectedDepts.join(",");
+        let deptFilter = "";
+        if (!selectedDepts.includes("All")) {
+          const selectedCodes = selectedDepts
+            .map((name) => departmentMap.get(name))
+            .filter((code) => code && code !== "");
+          deptFilter = selectedCodes.join(",");
+        }
 
         const activeCountPayload = await listBatchOrders({
           pageNumber: "1",
@@ -984,7 +1026,7 @@ function KdsPro() {
         toast.error("Revert failed");
       }
     },
-    [orders, buildRowsPerLine, verifyPersisted, selectedDepts]
+    [orders, buildRowsPerLine, verifyPersisted, selectedDepts, departmentMap]
   );
 
   const toggleItemState = useCallback(
@@ -1034,10 +1076,22 @@ function KdsPro() {
     setSearchTerm("");
 
     if (dept === "All") {
-      return setSelectedDepts(["All"]);
+      const newSelectedDepts = ["All"];
+      setSelectedDepts(newSelectedDepts);
+      // Save to localStorage
+      try {
+        localStorage.setItem(
+          "selectedDepartments",
+          JSON.stringify(newSelectedDepts)
+        );
+      } catch (error) {
+        console.error(
+          "Failed to save selected departments to localStorage:",
+          error
+        );
+      }
+      return;
     }
-
-    const code = departmentMap.get(dept);
 
     let next = selectedDepts.filter((d) => d !== "All");
 
@@ -1052,6 +1106,16 @@ function KdsPro() {
     }
 
     setSelectedDepts(next);
+
+    // Save to localStorage
+    try {
+      localStorage.setItem("selectedDepartments", JSON.stringify(next));
+    } catch (error) {
+      console.error(
+        "Failed to save selected departments to localStorage:",
+        error
+      );
+    }
   };
 
   /* ---------- UI Helper Functions ---------- */
@@ -1229,6 +1293,7 @@ function KdsPro() {
             t={t}
             onItemClick={handleSidebarItemClick}
             selectedDepts={selectedDepts}
+            departmentMap={departmentMap}
           />
         )}
 
