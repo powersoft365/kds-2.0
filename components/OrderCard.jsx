@@ -95,17 +95,15 @@ export function OrderCard({
   // Check if order is currently being cooked
   const isCooking = !!order.cooking && !isCompleted;
 
-  // ✅ FIX: readyToComplete now only considers items in selected departments
+  // ✅ FIX 1: Complete button – only consider items in selected departments
   const readyToComplete = React.useMemo(() => {
     const items = Array.isArray(order.items) ? order.items : [];
     if (items.length === 0) return false;
 
-    // If "All" is selected, use all items
     if (Array.isArray(selectedDepts) && selectedDepts.includes("All")) {
       return items.every((i) => i.itemStatus === "checked");
     }
 
-    // Otherwise only consider items that belong to currently selected departments
     const visibleItems = items.filter((i) =>
       Array.isArray(selectedDepts) ? selectedDepts.includes(i.dept) : false
     );
@@ -115,14 +113,23 @@ export function OrderCard({
     return visibleItems.every((i) => i.itemStatus === "checked");
   }, [order.items, selectedDepts]);
 
-  // Check if all items in the order are cancelled (ready to reject)
-  const readyToReject = React.useMemo(
-    () =>
-      Array.isArray(order.items) &&
-      order.items.length > 0 &&
-      order.items.every((i) => i.itemStatus === "cancelled"),
-    [order.items]
-  );
+  // ✅ FIX 2: Rejected button – also only consider items in selected departments
+  const readyToReject = React.useMemo(() => {
+    const items = Array.isArray(order.items) ? order.items : [];
+    if (items.length === 0) return false;
+
+    if (Array.isArray(selectedDepts) && selectedDepts.includes("All")) {
+      return items.every((i) => i.itemStatus === "cancelled");
+    }
+
+    const visibleItems = items.filter((i) =>
+      Array.isArray(selectedDepts) ? selectedDepts.includes(i.dept) : false
+    );
+
+    if (visibleItems.length === 0) return false;
+
+    return visibleItems.every((i) => i.itemStatus === "cancelled");
+  }, [order.items, selectedDepts]);
 
   // FIX: Check if order has system status of APPROVED or REJECTED to show Undo button
   const hasApprovedOrRejectedSystemStatus =
@@ -170,7 +177,6 @@ export function OrderCard({
     }
   };
 
-  // simple slide to 100% to revert cooking state to Not Started
   /* ---------- Slide-to-Revert Functionality ---------- */
 
   const [revertOpen, setRevertOpen] = React.useState(false);
@@ -323,8 +329,6 @@ export function OrderCard({
     ) : null;
 
   const handlePrimaryClick = () => {
-    // 🔑 This is the path that was misbehaving before.
-    // Now readyToComplete respects selectedDepts, so this condition works correctly.
     if (isCooking && !readyToComplete) {
       openRevert();
       return;
@@ -347,9 +351,6 @@ export function OrderCard({
 
   const handleRejectClick = () => {
     if (readyToReject) {
-      console.log(
-        `Directly rejecting Order #${order.id} - all items are cancelled`
-      );
       onRejectAction && onRejectAction(order);
       showActionToast({
         action: "order.reject",
@@ -465,14 +466,12 @@ export function OrderCard({
   };
 
   /* ---------- Render ---------- */
-  // header time
   const orderTime = formatOrderTime(
     order?._raw.invoice_header?.batch_invoice_date_utc0
   );
 
   /**
-   * FIX: Get display text for status badge
-   * Show REJECTED/APPROVED for system status, otherwise use UI status
+   * Get display text for status badge
    */
   const getStatusDisplayText = () => {
     if (order.systemStatus === "REJECTED") return "REJECTED";
@@ -516,7 +515,6 @@ export function OrderCard({
                 )}
               </div>
             </div>
-            {/* FIX: Show status badge with proper system status text */}
             {getStatusDisplayText() ? (
               <span className={subStatusBadge(sub)}>
                 {getStatusDisplayText()}
@@ -538,7 +536,6 @@ export function OrderCard({
                           No items for this department
                         </li>
                       ) : (
-                        //here is  updateable status
                         (Array.isArray(items) ? items : []).map((it, index) => {
                           const isChecked = it.itemStatus === "checked";
                           const isCancelled = it.itemStatus === "cancelled";
@@ -547,7 +544,6 @@ export function OrderCard({
                             !!it.itemCode365 &&
                             notesAvailable.has(it.itemCode365);
 
-                          // Create a comma-separated string of modifiers
                           const modifiersList = mods
                             .map((m) => {
                               if (typeof m === "object" && m.modifier_name) {
@@ -557,11 +553,9 @@ export function OrderCard({
                             })
                             .join(", ");
 
-                          // Determine background color based on modifier type
                           let bgColor = "bg-gray-100";
                           let icon = null;
 
-                          // Check if any modifier is a "no" modifier (cancelled)
                           const hasNoModifier = mods.some(
                             (m) =>
                               typeof m === "object" &&
@@ -569,7 +563,6 @@ export function OrderCard({
                               m.modifier_prefix.toLowerCase() === "no"
                           );
 
-                          // Check if any modifier is a "plus" modifier
                           const hasPlusModifier = mods.some(
                             (m) =>
                               typeof m === "object" &&
@@ -577,7 +570,6 @@ export function OrderCard({
                               m.modifier_prefix.toLowerCase() === "plus"
                           );
 
-                          // Set background color based on modifier types
                           if (hasNoModifier) {
                             bgColor = "bg-red-50";
                             icon = (
@@ -629,7 +621,6 @@ export function OrderCard({
                                 >
                                   {mods.length > 0 && (
                                     <div className="flex flex-col gap-1">
-                                      {/* Display modifiers as comma-separated list with background color */}
                                       <span
                                         className={`inline-flex items-center p-1 font-semibold rounded-md ${bgColor} text-md`}
                                       >
@@ -700,10 +691,7 @@ export function OrderCard({
                           className="w-full sm:max-w-xs md:w-auto justify-center font-bold bg-red-600 hover:bg-red-700"
                           onClick={(e) => {
                             e.stopPropagation();
-                            console.log(
-                              `Rejected button clicked for Order #${order.id} - all items are cancelled`
-                            );
-                            handleRejectClick(); // FIX: Direct reject without slide confirmation
+                            handleRejectClick();
                           }}
                         >
                           <Ban className="w-4 h-4 mr-2" />
@@ -724,7 +712,6 @@ export function OrderCard({
                   ) : null
                 ) : (
                   <div className="grid grid-cols-2 gap-3 md:flex md:gap-3 md:justify-end">
-                    {/* FIX: Show Undo button for completed orders OR orders with APPROVED/REJECTED system status */}
                     {isCompleted || hasApprovedOrRejectedSystemStatus ? (
                       <Button
                         className="w-full md:w-auto justify-center font-bold bg-slate-700 hover:bg-slate-800"
@@ -742,10 +729,7 @@ export function OrderCard({
                         className="w-full md:w-auto justify-center font-bold bg-red-600 hover:bg-red-700"
                         onClick={(e) => {
                           e.stopPropagation();
-                          console.log(
-                            `Rejected button clicked for Order #${order.id} - all items are cancelled`
-                          );
-                          handleRejectClick(); // FIX: Direct reject without slide confirmation
+                          handleRejectClick();
                         }}
                       >
                         <Ban className="w-4 h-4 mr-2" />
