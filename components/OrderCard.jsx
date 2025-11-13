@@ -95,14 +95,25 @@ export function OrderCard({
   // Check if order is currently being cooked
   const isCooking = !!order.cooking && !isCompleted;
 
-  // Check if all items in the order are checked (ready to complete)
-  const readyToComplete = React.useMemo(
-    () =>
-      Array.isArray(order.items) &&
-      order.items.length > 0 &&
-      order.items.every((i) => i.itemStatus === "checked"),
-    [order.items]
-  );
+  // ✅ FIX: readyToComplete now only considers items in selected departments
+  const readyToComplete = React.useMemo(() => {
+    const items = Array.isArray(order.items) ? order.items : [];
+    if (items.length === 0) return false;
+
+    // If "All" is selected, use all items
+    if (Array.isArray(selectedDepts) && selectedDepts.includes("All")) {
+      return items.every((i) => i.itemStatus === "checked");
+    }
+
+    // Otherwise only consider items that belong to currently selected departments
+    const visibleItems = items.filter((i) =>
+      Array.isArray(selectedDepts) ? selectedDepts.includes(i.dept) : false
+    );
+
+    if (visibleItems.length === 0) return false;
+
+    return visibleItems.every((i) => i.itemStatus === "checked");
+  }, [order.items, selectedDepts]);
 
   // Check if all items in the order are cancelled (ready to reject)
   const readyToReject = React.useMemo(
@@ -312,6 +323,8 @@ export function OrderCard({
     ) : null;
 
   const handlePrimaryClick = () => {
+    // 🔑 This is the path that was misbehaving before.
+    // Now readyToComplete respects selectedDepts, so this condition works correctly.
     if (isCooking && !readyToComplete) {
       openRevert();
       return;

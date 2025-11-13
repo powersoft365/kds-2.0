@@ -110,6 +110,18 @@ export function Header({
     (typeof p === "object" || typeof p === "function") &&
     typeof p.then === "function";
 
+  // Save selected departments to localStorage
+  const saveSelectedDeptsToLocalStorage = (depts) => {
+    try {
+      localStorage.setItem("selectedDepartments", JSON.stringify(depts));
+    } catch (error) {
+      console.error(
+        "Failed to save selected departments to localStorage:",
+        error
+      );
+    }
+  };
+
   const handleToggleDept = (dept) => {
     if (isLocked && activeLoadingDept !== dept) return;
     setActiveLoadingDept(dept);
@@ -119,6 +131,31 @@ export function Header({
 
     try {
       const result = toggleDept(dept);
+
+      // Get current selected departments and calculate new selection
+      let newSelectedDepts;
+      if (dept === "All") {
+        newSelectedDepts = ["All"];
+      } else {
+        let current = selectedDepts.filter((d) => d !== "All");
+
+        if (current.includes(dept)) {
+          // Remove department
+          newSelectedDepts = current.filter((d) => d !== dept);
+        } else {
+          // Add department
+          newSelectedDepts = [...current, dept];
+        }
+
+        // If no departments selected, default to "All"
+        if (newSelectedDepts.length === 0) {
+          newSelectedDepts = ["All"];
+        }
+      }
+
+      // Save to localStorage
+      saveSelectedDeptsToLocalStorage(newSelectedDepts);
+
       if (isPromise(result)) {
         Promise.resolve(result)
           .catch(() => {})
@@ -166,14 +203,15 @@ export function Header({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="secondary" size="sm" className="gap-0">
-          {selectedDepts?.length === 0 ? (
+          {selectedDepts?.length === 0 || selectedDepts.includes("All") ? (
             <span className="text-[11px] opacity-80">Tag List</span>
           ) : (
             <>
-              {selectedDepts?.map((d, idx) => (
+              {selectedDepts?.slice(0, 2).map((d, idx) => (
                 <span key={idx} className="text-[11px] opacity-80">
                   {d}
-                  {idx < selectedDepts.length - 1 ? ", " : ""}
+                  {idx < Math.min(selectedDepts.length - 1, 1) ? ", " : ""}
+                  {selectedDepts.length > 2 && idx === 1 ? "..." : ""}
                 </span>
               ))}
             </>
