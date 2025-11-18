@@ -680,7 +680,7 @@ export function OrderCard({
                 >
                   <Clock className={`w-4 h-4 ${countdownTone}`} />
                   <span className={`${countdownTone}`}>{fmt(remainingMs)}</span>
-                  {overdue}
+                  {/* {overdue} */}
                 </button>
 
                 {insideDialog ? (
